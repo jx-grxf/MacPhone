@@ -13,6 +13,8 @@ struct Dependency: Identifiable, Equatable {
         case none
         /// Install a Homebrew cask (needs Homebrew).
         case brewCask(cask: String, label: String)
+        /// Install a Homebrew formula (needs Homebrew).
+        case brewFormula(formula: String, label: String)
         /// Install SDK packages via sdkmanager (needs command-line tools + Java).
         case sdkmanager(packages: [String], label: String)
         /// Download + unpack the command-line tools into the default SDK root.
@@ -25,7 +27,8 @@ struct Dependency: Identifiable, Equatable {
         var label: String? {
             switch self {
             case .none: nil
-            case .brewCask(_, let label), .sdkmanager(_, let label),
+            case .brewCask(_, let label), .brewFormula(_, let label),
+                 .sdkmanager(_, let label),
                  .bootstrapTools(let label), .bridgeVenv(let label), .manual(let label, _, _): label
             }
         }
@@ -128,23 +131,40 @@ struct SetupService {
             fix: sdk.hasEmulator ? .none : .sdkmanager(packages: ["emulator"], label: "Install emulator")
         ))
 
-        // BLE bridge runtime — the headline "mirror to emulator" feature needs a Python venv
-        // with Bumble next to the bridge scripts. Checked here so Setup doesn't report "ready"
-        // and then fail at mirror time.
+        let python = Self.python3Path()
+        items.append(Dependency(
+            id: "python",
+            title: "Python runtime",
+            detail: python.map { "Found at \($0)." }
+                ?? "Missing. Needed for the BLE-to-emulator bridge.",
+            satisfied: python != nil,
+            required: false,
+            fix: python != nil ? .none
+                : (brew != nil ? .brewFormula(formula: "python", label: "Install Python")
+                               : .manual(label: "Install Homebrew first", url: "https://brew.sh", command: nil))
+        ))
+
+        // The scripts ship inside release builds, while the writable Python venv lives
+        // in Application Support. Development checkouts may continue using bridge/.venv.
         let bridgeDir = NetsimBridgeProcess.bridgeDirectory()
         let venvReady = bridgeDir.map {
-            FileManager.default.isExecutableFile(atPath: $0.appendingPathComponent(".venv/bin/python").path)
+            FileManager.default.isExecutableFile(
+                atPath: NetsimBridgeProcess.bridgePython(for: $0).path
+            )
         } ?? false
+        let runtimePath = bridgeDir.map { NetsimBridgeProcess.bridgePython(for: $0).deletingLastPathComponent().deletingLastPathComponent() }
         items.append(Dependency(
             id: "ble-bridge",
             title: "BLE bridge runtime (Python + Bumble)",
             detail: bridgeDir == nil
-                ? "bridge/ folder not found. Set MACPHONE_BRIDGE_DIR to its location."
-                : (venvReady ? "Ready at \(bridgeDir!.appendingPathComponent(".venv").path)."
+                ? "Bundled bridge scripts are missing. Reinstall MacPhone."
+                : (venvReady ? "Ready at \(runtimePath!.path)."
                              : "Missing. Needed to mirror a BLE device into the Android emulator."),
             satisfied: venvReady,
             required: false,
-            fix: venvReady || bridgeDir == nil ? .none : .bridgeVenv(label: "Set up bridge runtime")
+            fix: venvReady || bridgeDir == nil || python == nil
+                ? .none
+                : .bridgeVenv(label: "Set up bridge runtime")
         ))
 
         return items
@@ -157,6 +177,8 @@ struct SetupService {
             return
         case .brewCask(let cask, _):
             try await installBrewCask(cask, onLog: onLog)
+        case .brewFormula(let formula, _):
+            try await installBrewFormula(formula, onLog: onLog)
         case .sdkmanager(let packages, _):
             try await installSdkPackages(packages, onLog: onLog)
         case .bootstrapTools:
@@ -181,7 +203,7 @@ struct SetupService {
             case .brewMissing: "Homebrew is not installed. Install it first (see the Homebrew row)."
             case .toolsMissing: "Command-line tools missing. Install them first."
             case .javaMissing: "No Java runtime. Install Android Studio or Temurin first."
-            case .bridgeDirMissing: "Could not find the bridge/ folder. Set MACPHONE_BRIDGE_DIR."
+            case .bridgeDirMissing: "Bundled bridge scripts are missing. Reinstall MacPhone."
             case .pythonMissing: "No python3 found. Install it (e.g. brew install python) and retry."
             case .downloadFailed(let m): "Download failed: \(m)"
             case .unpackFailed(let c): "Unpacking the tools failed (ditto exit \(c))."
@@ -196,13 +218,15 @@ struct SetupService {
             .first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    /// Create `bridge/.venv` and install Bumble, so "Mirror to Emulator" works on a fresh Mac.
+    /// Create a writable venv in Application Support and install Bumble.
     private func bootstrapBridgeVenv(onLog: @escaping @Sendable (String) -> Void) async throws {
-        guard let bridgeDir = NetsimBridgeProcess.bridgeDirectory() else {
+        guard NetsimBridgeProcess.bridgeDirectory() != nil else {
             throw SetupError.bridgeDirMissing
         }
         guard let python = Self.python3Path() else { throw SetupError.pythonMissing }
-        let venv = bridgeDir.appendingPathComponent(".venv")
+        let runtime = NetsimBridgeProcess.bridgeRuntimeDirectory
+        try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+        let venv = runtime.appendingPathComponent(".venv")
 
         onLog("Creating Python venv at \(venv.path)…")
         let venvCode = try await runner.runStreaming(
@@ -225,6 +249,16 @@ struct SetupService {
         let code = try await runner.runStreaming(brew, ["install", "--cask", cask], timeout: 1800, onLine: onLog)
         guard code == 0 else { throw SetupError.commandFailed("brew", code) }
         onLog("\(cask) installed.")
+    }
+
+    private func installBrewFormula(_ formula: String, onLog: @escaping @Sendable (String) -> Void) async throws {
+        guard let brew = Self.brewPath() else { throw SetupError.brewMissing }
+        onLog("Installing \(formula) via Homebrew…")
+        let code = try await runner.runStreaming(
+            brew, ["install", formula], timeout: 1800, onLine: onLog
+        )
+        guard code == 0 else { throw SetupError.commandFailed("brew", code) }
+        onLog("\(formula) installed.")
     }
 
     private func installSdkPackages(_ packages: [String], onLog: @escaping @Sendable (String) -> Void) async throws {

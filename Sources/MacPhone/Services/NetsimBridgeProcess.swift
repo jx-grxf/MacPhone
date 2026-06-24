@@ -17,8 +17,8 @@ final class NetsimBridgeProcess {
     private var readHandle: FileHandle?
     private var intentionalStop = false
 
-    /// Where the bridge scripts live. Resolved from an env override, the working dir, or a
-    /// search upward from the executable — falling back to the known project path.
+    /// Where the bridge scripts live. Release builds carry them in the app bundle;
+    /// development builds can still use an override or the repository checkout.
     /// `nonisolated` so setup checks (off the main actor) can resolve it too.
     nonisolated static func bridgeDirectory() -> URL? {
         let fm = FileManager.default
@@ -32,6 +32,9 @@ final class NetsimBridgeProcess {
         }
 
         var candidates: [URL] = []
+        if let resources = Bundle.main.resourceURL {
+            candidates.append(resources.appendingPathComponent("bridge", isDirectory: true))
+        }
         let cwd = URL(fileURLWithPath: fm.currentDirectoryPath)
         candidates.append(cwd.appendingPathComponent("bridge"))
 
@@ -47,15 +50,35 @@ final class NetsimBridgeProcess {
         return candidates.first(where: hasScript)
     }
 
+    /// Writable location for the Python environment used by bundled release builds.
+    nonisolated static var bridgeRuntimeDirectory: URL {
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+        return support
+            .appendingPathComponent("MacPhone", isDirectory: true)
+            .appendingPathComponent("bridge-runtime", isDirectory: true)
+    }
+
+    nonisolated static func bridgePython(for scriptsDirectory: URL) -> URL {
+        let developmentPython = scriptsDirectory.appendingPathComponent(".venv/bin/python")
+        if FileManager.default.isExecutableFile(atPath: developmentPython.path) {
+            return developmentPython
+        }
+        return bridgeRuntimeDirectory.appendingPathComponent(".venv/bin/python")
+    }
+
     func start(port: UInt16 = 8765) {
         guard process == nil else { return }
         guard let dir = Self.bridgeDirectory() else {
             fail("Could not find the bridge/ folder. Set MACPHONE_BRIDGE_DIR.")
             return
         }
-        let python = dir.appendingPathComponent(".venv/bin/python")
+        let python = Self.bridgePython(for: dir)
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
-            fail("Python venv missing. In bridge/: python3 -m venv .venv && .venv/bin/pip install bumble")
+            fail("BLE bridge runtime missing. Open Setup and choose “Set up bridge runtime”.")
             return
         }
 

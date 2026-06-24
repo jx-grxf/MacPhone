@@ -1,0 +1,281 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Existing tag version without the leading v"
+        required: true
+        type: string
+      build:
+        description: "Sparkle build number; leave empty to use the GitHub run number"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  preflight:
+    name: Release preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
+      channel: ${{ steps.version.outputs.channel }}
+      commit: ${{ steps.tag.outputs.commit }}
+    steps:
+      - name: Checkout history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release identity
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUILD: ${{ inputs.build }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v${INPUT_VERSION#v}"
+          fi
+          version="${tag#v}"
+          build="${INPUT_BUILD:-$GITHUB_RUN_NUMBER}"
+
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || {
+            echo "error: unsupported release version '$version'" >&2
+            exit 1
+          }
+          [[ "$build" =~ ^[1-9][0-9]*$ ]] || {
+            echo "error: build number must be a positive integer" >&2
+            exit 1
+          }
+
+          if [[ "$version" == *-beta.* ]]; then
+            channel="beta"
+          else
+            channel="stable"
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "build=$build"
+            echo "channel=$channel"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve tagged commit reachable from main
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin main "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          commit="$(git rev-list -n 1 "refs/tags/${RELEASE_TAG}")"
+          git merge-base --is-ancestor "$commit" origin/main || {
+            echo "error: tagged commit is not reachable from origin/main" >&2
+            exit 1
+          }
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release metadata
+        env:
+          MACPHONE_VERSION: ${{ steps.version.outputs.version }}
+          MACPHONE_BUILD: ${{ steps.version.outputs.build }}
+          MACPHONE_UPDATE_CHANNEL: ${{ steps.version.outputs.channel }}
+          MACPHONE_RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: ./script/verify_release_metadata.sh
+
+  build-release:
+    name: Build and publish release
+    needs: preflight
+    runs-on: macos-15
+    timeout-minutes: 50
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Install tools
+        run: brew install xcodegen create-dmg
+
+      - name: Verify release secrets
+        env:
+          MACPHONE_SPARKLE_PRIVATE_KEY: ${{ secrets.MACPHONE_SPARKLE_PRIVATE_KEY }}
+          MACPHONE_SPARKLE_PUBLIC_KEY: ${{ secrets.MACPHONE_SPARKLE_PUBLIC_KEY }}
+          MACPHONE_SIGN_IDENTITY: ${{ secrets.MACPHONE_SIGN_IDENTITY }}
+          MACPHONE_NOTARY_ENABLED: ${{ secrets.MACPHONE_NOTARY_ENABLED }}
+          MACPHONE_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.MACPHONE_NOTARY_KEYCHAIN_PROFILE }}
+          MACPHONE_NOTARY_APPLE_ID: ${{ secrets.MACPHONE_NOTARY_APPLE_ID }}
+          MACPHONE_NOTARY_TEAM_ID: ${{ secrets.MACPHONE_NOTARY_TEAM_ID }}
+          MACPHONE_NOTARY_PASSWORD: ${{ secrets.MACPHONE_NOTARY_PASSWORD }}
+        run: ./script/verify_release_secrets.sh
+
+      - name: Build DMG
+        env:
+          MACPHONE_VERSION: ${{ needs.preflight.outputs.version }}
+          MACPHONE_BUILD: ${{ needs.preflight.outputs.build }}
+          MACPHONE_UPDATE_CHANNEL: ${{ needs.preflight.outputs.channel }}
+          MACPHONE_WARNINGS_AS_ERRORS: "true"
+          MACPHONE_SPARKLE_PUBLIC_KEY: ${{ secrets.MACPHONE_SPARKLE_PUBLIC_KEY }}
+          MACPHONE_SIGN_IDENTITY: ${{ secrets.MACPHONE_SIGN_IDENTITY }}
+        run: ./script/package_dmg.sh
+
+      - name: Build Sparkle assets
+        env:
+          MACPHONE_VERSION: ${{ needs.preflight.outputs.version }}
+          MACPHONE_BUILD: ${{ needs.preflight.outputs.build }}
+          MACPHONE_UPDATE_CHANNEL: ${{ needs.preflight.outputs.channel }}
+          MACPHONE_SPARKLE_PRIVATE_KEY: ${{ secrets.MACPHONE_SPARKLE_PRIVATE_KEY }}
+          MACPHONE_SPARKLE_DOWNLOAD_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.tag }}
+        run: ./script/create_sparkle_assets.sh
+
+      - name: Notarize DMG
+        env:
+          MACPHONE_VERSION: ${{ needs.preflight.outputs.version }}
+          MACPHONE_UPDATE_CHANNEL: ${{ needs.preflight.outputs.channel }}
+          MACPHONE_NOTARY_ENABLED: ${{ secrets.MACPHONE_NOTARY_ENABLED }}
+          MACPHONE_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.MACPHONE_NOTARY_KEYCHAIN_PROFILE }}
+          MACPHONE_NOTARY_APPLE_ID: ${{ secrets.MACPHONE_NOTARY_APPLE_ID }}
+          MACPHONE_NOTARY_TEAM_ID: ${{ secrets.MACPHONE_NOTARY_TEAM_ID }}
+          MACPHONE_NOTARY_PASSWORD: ${{ secrets.MACPHONE_NOTARY_PASSWORD }}
+        run: ./script/notarize_release.sh
+
+      - name: Verify release artifacts
+        env:
+          MACPHONE_VERSION: ${{ needs.preflight.outputs.version }}
+          MACPHONE_BUILD: ${{ needs.preflight.outputs.build }}
+          MACPHONE_UPDATE_CHANNEL: ${{ needs.preflight.outputs.channel }}
+          MACPHONE_RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          MACPHONE_NOTARY_ENABLED: ${{ secrets.MACPHONE_NOTARY_ENABLED }}
+        run: ./script/verify_release_artifacts.sh
+
+      - name: Extract current release notes
+        run: |
+          ./script/extract_release_notes.sh \
+            "${{ needs.preflight.outputs.version }}" \
+            dist/RELEASE_NOTES.md
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/MacPhone-*.dmg
+            dist/sparkle/MacPhone-*.zip
+            dist/sparkle/appcast.xml
+            dist/SHA256SUMS
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MacPhone-${{ needs.preflight.outputs.version }}
+          path: |
+            dist/MacPhone-${{ needs.preflight.outputs.version }}.dmg
+            dist/sparkle/MacPhone-${{ needs.preflight.outputs.version }}.zip
+            dist/sparkle/appcast.xml
+            dist/SHA256SUMS
+            dist/RELEASE_NOTES.md
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          RELEASE_CHANNEL: ${{ needs.preflight.outputs.channel }}
+          RELEASE_COMMIT: ${{ needs.preflight.outputs.commit }}
+        run: |
+          set -euo pipefail
+          assets=(
+            "dist/MacPhone-${RELEASE_VERSION}.dmg#MacPhone-${RELEASE_VERSION}.dmg"
+            "dist/sparkle/MacPhone-${RELEASE_VERSION}.zip#MacPhone-${RELEASE_VERSION}.zip"
+            "dist/sparkle/appcast.xml#appcast.xml"
+            "dist/SHA256SUMS#SHA256SUMS"
+          )
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            if [[ "$RELEASE_CHANNEL" == "beta" ]]; then
+              gh release edit "$RELEASE_TAG" --target "$RELEASE_COMMIT" --title "MacPhone ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md --prerelease --latest=false
+            else
+              gh release edit "$RELEASE_TAG" --target "$RELEASE_COMMIT" --title "MacPhone ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md --prerelease=false --latest
+            fi
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          elif [[ "$RELEASE_CHANNEL" == "beta" ]]; then
+            gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --target "$RELEASE_COMMIT" --title "MacPhone ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md --prerelease
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --target "$RELEASE_COMMIT" --title "MacPhone ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md --latest
+          fi
+
+      - name: Verify published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          release_json="$(gh release view "$RELEASE_TAG" --json assets,isDraft,url)"
+          [[ "$(jq -r '.isDraft' <<<"$release_json")" == "false" ]]
+          for name in "MacPhone-${RELEASE_VERSION}.dmg" "MacPhone-${RELEASE_VERSION}.zip" appcast.xml SHA256SUMS; do
+            size="$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .size' <<<"$release_json")"
+            [[ "$size" =~ ^[1-9][0-9]*$ ]] || {
+              echo "error: published asset $name is missing or empty" >&2
+              exit 1
+            }
+          done
+          echo "Published $(jq -r '.url' <<<"$release_json")"
+
+      - name: Publish combined beta appcast feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.preflight.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p .build/beta-feed
+          previous=""
+          if gh release download beta --pattern appcast.xml --dir .build/beta-feed --clobber; then
+            previous=".build/beta-feed/appcast.xml"
+          fi
+          python3 script/merge_beta_appcast.py \
+            dist/sparkle/appcast.xml \
+            "$previous" \
+            dist/sparkle/beta-appcast.xml
+          if gh release view beta >/dev/null 2>&1; then
+            gh release edit beta --target "$RELEASE_COMMIT" --prerelease --latest=false --title "MacPhone Beta Feed"
+            gh release upload beta "dist/sparkle/beta-appcast.xml#appcast.xml" --clobber
+          else
+            gh release create beta "dist/sparkle/beta-appcast.xml#appcast.xml" \
+              --target "$RELEASE_COMMIT" \
+              --title "MacPhone Beta Feed" \
+              --notes "Moving Sparkle feed containing stable and beta updates for beta-channel users." \
+              --prerelease
+          fi

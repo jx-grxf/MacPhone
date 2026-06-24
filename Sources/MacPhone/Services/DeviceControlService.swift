@@ -109,4 +109,53 @@ struct DeviceControlService {
             throw ControlError.commandFailed("adb emu kill failed: \(result.standardError.trimmedOneLine)")
         }
     }
+
+    // MARK: Boot detection (for the one-click provision flow)
+
+    /// Online `emulator-*` serials reported by `adb devices`. Used to spot the
+    /// serial a freshly launched emulator attaches as.
+    func emulatorSerials() async -> [String] {
+        guard let sdk = AndroidSDK.locate(), sdk.hasADB else { return [] }
+        guard let result = try? await runner.run(sdk.adbPath, ["devices"], timeout: 15),
+              result.succeeded else { return [] }
+        return result.standardOutput
+            .split(whereSeparator: \.isNewline)
+            .dropFirst()
+            .compactMap { line in
+                let parts = line.split(whereSeparator: \.isWhitespace).map(String.init)
+                guard parts.count >= 2, parts[0].hasPrefix("emulator-"), parts[1] == "device" else { return nil }
+                return parts[0]
+            }
+    }
+
+    /// Wait until a *new* emulator (not in `existing`) comes online, then return its
+    /// serial. Polls `adb devices`; throws on timeout.
+    func waitForNewEmulator(excluding existing: Set<String>, timeout: TimeInterval = 150) async throws -> String {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let current = await emulatorSerials()
+            if let fresh = current.first(where: { !existing.contains($0) }) {
+                return fresh
+            }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        throw ControlError.commandFailed("Timed out waiting for the emulator to come online.")
+    }
+
+    /// Poll `getprop sys.boot_completed` until the emulator finishes booting.
+    func waitForBootCompleted(serial: String, timeout: TimeInterval = 240) async throws {
+        guard let sdk = AndroidSDK.locate() else { throw ControlError.androidSDKMissing }
+        guard sdk.hasADB else { throw ControlError.toolMissing("adb") }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let result = try? await runner.run(
+                sdk.adbPath, ["-s", serial, "shell", "getprop", "sys.boot_completed"],
+                timeout: 15, environment: sdk.toolEnvironment()
+            ), result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "1" {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+        }
+        throw ControlError.commandFailed("Timed out waiting for the emulator to finish booting.")
+    }
 }
