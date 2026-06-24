@@ -218,6 +218,12 @@ class FakeMaxG2:
         self.rx = bytearray()
         self.ready = False
 
+    def reset(self):
+        """A fresh client restarts the handshake from msgIt 0 with the name-derived key."""
+        self.crypto.reset()
+        self.rx = bytearray()
+        self.ready = False
+
     def on_chunk(self, data: bytes):
         self.rx += data
         while True:
@@ -310,6 +316,12 @@ async def main():
         )
 
         device.add_service(Service(NUS_SERVICE, [tx_char, rx_char]))
+
+        @device.on("connection")
+        def _on_connection(connection):
+            scooter.reset()
+            print(f"[nb] client connected ({connection.peer_address}) — handshake reset")
+
         await device.power_on()
 
         mfg = struct.pack("<H", MFG_COMPANY_ID) + bytes([DEVICE_TYPE, DEVICE_SUBTYPE])
