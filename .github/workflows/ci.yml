@@ -6,17 +6,54 @@ on:
   pull_request:
     branches: [main]
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
+  metadata:
+    name: Release metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release metadata
+        run: |
+          git diff --check
+          bash -n script/*.sh
+          python3 -m py_compile script/merge_beta_appcast.py
+          ./script/verify_release_metadata.sh
+
   build:
-    runs-on: macos-14
+    name: Build
+    runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.app
+      - name: Install tools
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: ./script/prepare_xcode_project.sh
 
       - name: Build
-        run: swift build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project MacPhone.xcodeproj \
+            -scheme MacPhone \
+            -configuration Debug \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath .build/ci \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -skipPackageUpdates \
+            MACPHONE_WARNINGS_AS_ERRORS=YES \
+            build | tail -30
 
-      - name: Test
-        run: swift test || echo "no tests yet"
+      - name: Verify bundled release resources
+        run: |
+          app=".build/ci/Build/Products/Debug/MacPhone.app"
+          test -f "$app/Contents/Resources/AppIcon.icns"
+          test -f "$app/Contents/Resources/bridge/macphone_netsim_bridge.py"
+          test ! -e "$app/Contents/Resources/bridge/.venv"

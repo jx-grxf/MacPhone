@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# Build a Release MacPhone.app and package it into a DMG.
+#
+# Inputs (env):
+#   MACPHONE_VERSION              required, e.g. 0.1.0
+#   MACPHONE_BUILD                optional, defaults to 1
+#   MACPHONE_SPARKLE_PUBLIC_KEY   optional, embeds into Info.plist when present
+#   MACPHONE_SIGN_IDENTITY        optional, Developer ID Application identity
+#   MACPHONE_UPDATE_CHANNEL       optional, stable or beta
+#
+# Output:
+#   dist/MacPhone.app
+#   dist/MacPhone-<version>.dmg
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [[ -z "${MACPHONE_VERSION:-}" ]]; then
+  echo "error: MACPHONE_VERSION is required" >&2
+  exit 1
+fi
+BUILD="${MACPHONE_BUILD:-1}"
+
+if ! command -v xcodegen >/dev/null 2>&1; then
+  echo "error: xcodegen is required" >&2
+  exit 1
+fi
+
+# Two unrelated tools share the name "create-dmg": the Homebrew formula
+# create-dmg/create-dmg (bash, supports --volname for a styled layout) and the
+# npm sindresorhus/create-dmg (supports --dmg-title). Prefer the styled one;
+# fall back to whatever is on PATH, and ultimately to a plain hdiutil DMG.
+CREATE_DMG_BIN=""
+for candidate in \
+  "/opt/homebrew/opt/create-dmg/bin/create-dmg" \
+  "/usr/local/opt/create-dmg/bin/create-dmg" \
+  "/opt/homebrew/bin/create-dmg" \
+  "/usr/local/bin/create-dmg" \
+  "$(command -v create-dmg 2>/dev/null || true)"; do
+  [[ -z "$candidate" || ! -x "$candidate" ]] && continue
+  if "$candidate" --help 2>&1 | grep -q -- "--volname"; then
+    CREATE_DMG_BIN="$candidate"
+    break
+  fi
+done
+if [[ -z "$CREATE_DMG_BIN" ]]; then
+  CREATE_DMG_BIN="$(command -v create-dmg 2>/dev/null || true)"
+fi
+
+./script/prepare_xcode_project.sh
+
+# Use a stable derived-data path inside the repo (.build is gitignored) so the
+# Sparkle SPM artifacts (sign_update) survive for create_sparkle_assets.sh.
+DERIVED_DATA="${MACPHONE_DERIVED_DATA:-$PWD/.build/release-derived-data}"
+rm -rf "$DERIVED_DATA"
+mkdir -p "$DERIVED_DATA"
+
+EXTRA_SETTINGS=(
+  "MARKETING_VERSION=$MACPHONE_VERSION"
+  "CURRENT_PROJECT_VERSION=$BUILD"
+)
+if [[ -n "${MACPHONE_SPARKLE_PUBLIC_KEY:-}" ]]; then
+  # Build setting (not INFOPLIST_KEY_*): Config/Info.plist expands
+  # $(MACPHONE_SPARKLE_PUBLIC_KEY) into SUPublicEDKey at build time.
+  EXTRA_SETTINGS+=("MACPHONE_SPARKLE_PUBLIC_KEY=$MACPHONE_SPARKLE_PUBLIC_KEY")
+fi
+if [[ -n "${MACPHONE_SIGN_IDENTITY:-}" ]]; then
+  # Real Developer ID signing: enable Hardened Runtime (required for
+  # notarization; Library Validation passes because everything is signed
+  # with the same team).
+  EXTRA_SETTINGS+=(
+    "CODE_SIGN_STYLE=Manual"
+    "CODE_SIGN_IDENTITY=$MACPHONE_SIGN_IDENTITY"
+    "CODE_SIGNING_REQUIRED=YES"
+    "ENABLE_HARDENED_RUNTIME=YES"
+  )
+fi
+if [[ "${MACPHONE_WARNINGS_AS_ERRORS:-}" == "true" ]]; then
+  EXTRA_SETTINGS+=("MACPHONE_WARNINGS_AS_ERRORS=YES")
+fi
+
+xcodebuild \
+  -project MacPhone.xcodeproj \
+  -scheme MacPhone \
+  -configuration Release \
+  -destination 'generic/platform=macOS' \
+  -derivedDataPath "$DERIVED_DATA" \
+  -onlyUsePackageVersionsFromResolvedFile \
+  -skipPackageUpdates \
+  "${EXTRA_SETTINGS[@]}" \
+  build | tail -20
+
+APP_SRC="$DERIVED_DATA/Build/Products/Release/MacPhone.app"
+if [[ ! -d "$APP_SRC" ]]; then
+  echo "error: $APP_SRC not produced" >&2
+  exit 1
+fi
+
+mkdir -p dist
+rm -rf dist/MacPhone.app
+cp -R "$APP_SRC" dist/MacPhone.app
+
+# Ad-hoc preview builds are signed "-" by the build; re-sign deeply so the
+# embedded Sparkle.framework + XPC services validate as a unit.
+if [[ -z "${MACPHONE_SIGN_IDENTITY:-}" ]]; then
+  codesign --force --deep --sign - dist/MacPhone.app
+fi
+codesign --verify --deep --strict dist/MacPhone.app
+
+DMG="dist/MacPhone-${MACPHONE_VERSION}.dmg"
+rm -f "$DMG"
+
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+
+build_plain_dmg() {
+  # GUI-free fallback: a plain drag-install DMG via hdiutil. No styled layout,
+  # but a valid installable image that never depends on Finder/AppleScript.
+  echo "note: building a plain DMG via hdiutil" >&2
+  cp -R dist/MacPhone.app "$STAGE/"
+  ln -s /Applications "$STAGE/Applications"
+  hdiutil create -volname "MacPhone ${MACPHONE_VERSION}" \
+    -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+}
+
+CREATE_DMG_HELP=""
+[[ -n "$CREATE_DMG_BIN" ]] && CREATE_DMG_HELP="$("$CREATE_DMG_BIN" --help 2>&1 || true)"
+
+if [[ "$CREATE_DMG_HELP" == *"--volname"* ]]; then
+  # create-dmg/create-dmg (Homebrew formula): styled layout.
+  cp -R dist/MacPhone.app "$STAGE/"
+  if ! "$CREATE_DMG_BIN" \
+      --volname "MacPhone ${MACPHONE_VERSION}" \
+      --window-pos 200 120 \
+      --window-size 540 360 \
+      --icon-size 96 \
+      --icon "MacPhone.app" 150 180 \
+      --app-drop-link 390 180 \
+      --no-internet-enable \
+      "$DMG" \
+      "$STAGE" >/dev/null; then
+    echo "warning: styled create-dmg failed — falling back to a plain DMG" >&2
+    rm -f "$DMG"; rm -rf "$STAGE"; mkdir -p "$STAGE"
+    build_plain_dmg
+  fi
+elif [[ "$CREATE_DMG_HELP" == *"--dmg-title"* ]]; then
+  # sindresorhus/create-dmg (npm): emits "<App> <version>.dmg" next to the app.
+  find dist -maxdepth 1 -type f -name 'MacPhone*.dmg' -delete
+  (
+    cd dist
+    "$CREATE_DMG_BIN" --overwrite --no-code-sign \
+      --dmg-title="MacPhone ${MACPHONE_VERSION}" MacPhone.app . >/dev/null 2>&1 || true
+  )
+  produced="$(find dist -maxdepth 1 -type f -name 'MacPhone*.dmg' -print -quit)"
+  if [[ -n "$produced" && "$produced" != "$DMG" ]]; then
+    mv "$produced" "$DMG"
+  fi
+  [[ -f "$DMG" ]] || build_plain_dmg
+else
+  build_plain_dmg
+fi
+
+if [[ ! -f "$DMG" ]]; then
+  echo "error: DMG was not produced at $DMG" >&2
+  exit 1
+fi
+
+hdiutil imageinfo "$DMG" >/dev/null
+echo "Built $DMG"
