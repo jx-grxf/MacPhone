@@ -1,0 +1,14 @@
+.DS_Store
+.build/
+dist/
+DerivedData/
+*.xcuserdata/
+*.xcuserstate
+
+# Python BLE bridge
+bridge/.venv/
+**/__pycache__/
+*.pyc
+
+# Tooling environment (not for publication)
+.codex/
