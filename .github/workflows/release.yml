@@ -265,15 +265,16 @@ jobs:
           if gh release download beta --pattern appcast.xml --dir .build/beta-feed --clobber; then
             previous=".build/beta-feed/appcast.xml"
           fi
+          mkdir -p dist/beta-feed
           python3 script/merge_beta_appcast.py \
             dist/sparkle/appcast.xml \
             "$previous" \
-            dist/sparkle/beta-appcast.xml
+            dist/beta-feed/appcast.xml
           if gh release view beta >/dev/null 2>&1; then
             gh release edit beta --target "$RELEASE_COMMIT" --prerelease --latest=false --title "MacPhone Beta Feed"
-            gh release upload beta "dist/sparkle/beta-appcast.xml#appcast.xml" --clobber
+            gh release upload beta dist/beta-feed/appcast.xml --clobber
           else
-            gh release create beta "dist/sparkle/beta-appcast.xml#appcast.xml" \
+            gh release create beta dist/beta-feed/appcast.xml \
               --target "$RELEASE_COMMIT" \
               --title "MacPhone Beta Feed" \
               --notes "Moving Sparkle feed containing stable and beta updates for beta-channel users." \
