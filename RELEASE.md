@@ -1,19 +1,16 @@
 # Release readiness
 
-Status of the MacPhone app for a first public build. **Not yet released.**
+Status of the MacPhone app for a first public build.
 
 ## Build & run
 
 ```bash
-swift build                      # compile
-./script/build_and_run.sh run    # package dist/MacPhone.app (with Info.plist) and launch
-./script/build_and_run.sh --verify
+./script/build_and_run.sh build-only
+./script/build_and_run.sh
 ```
 
-The packaging script produces a real `.app` with `Info.plist` carrying
-`NSBluetoothAlwaysUsageDescription`, version metadata (`CFBundleShortVersionString` /
-`CFBundleVersion`, override via `MACPHONE_VERSION` / `MACPHONE_BUILD`), and the
-developer-tools category.
+The XcodeGen project embeds Sparkle, the app icon, the Python bridge scripts,
+version metadata, and the Bluetooth permission description.
 
 ## Fixed in this pass
 
@@ -37,15 +34,13 @@ Frontend / UX
 - The provision sheet is resizable, has **Copy Log**, and a **Boot after creating** toggle.
 - The bridge subtitle tells users to use a BLE client (nRF Connect), not Android Settings.
 
-## Remaining before an actual release
+## Distribution
 
-1. **Bundle the bridge runtime for distribution.** The app locates `bridge/` by walking up
-   from its own location, so it works when run from the repo (`dist/MacPhone.app` beside
-   `bridge/`). A copy dragged to `/Applications` will not find `bridge/`. To ship
-   standalone: copy `bridge/*.py` into `Contents/Resources/bridge`, have
-   `NetsimBridgeProcess.bridgeDirectory()` check `Bundle.main.resourceURL` first, and
-   relocate the Python venv to `~/Library/Application Support/MacPhone/bridge-venv`
-   (an app bundle in `/Applications` is read-only, so the venv cannot live inside it).
-   Until then, set `MACPHONE_BRIDGE_DIR` to point at a writable `bridge/` checkout.
-2. **Code signing & notarization** for distribution outside the dev machine.
-3. **App icon** (`CFBundleIconFile` / `.icns`) — currently unset.
+- Stable tags use `vX.Y.Z`; beta tags use `vX.Y.Z-beta.N`.
+- Stable clients read the latest stable release appcast.
+- Beta clients read the moving `beta` release, whose appcast retains both stable
+  and beta items so beta users can move back onto a newer stable build.
+- Release builds currently use ad-hoc signing. Developer ID signing and
+  notarization activate when the corresponding `MACPHONE_*` secrets are set.
+- The bridge scripts ship in the app. Its writable Bumble environment is created
+  under `~/Library/Application Support/MacPhone/bridge-runtime`.
