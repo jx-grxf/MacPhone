@@ -264,6 +264,9 @@ private struct DeviceActionButton: View {
                     if device.isRunning {
                         Button("Stop") { Task { await store.stop(device) } }
                     }
+                    if device.platform == .android, device.isRunning {
+                        Button("Install BLE Radar") { Task { await store.installBLERadar(onto: device) } }
+                    }
                     if device.canWipe {
                         Button("Wipe Data…", role: .destructive) { confirmingWipe = true }
                     }

@@ -5,6 +5,26 @@ DerivedData/
 *.xcuserdata/
 *.xcuserstate
 
+# xcodegen output — the project is generated from project.yml, never committed.
+*.xcodeproj/
+*.xcworkspace/
+
+# SwiftPM lock: only the reviewed copy under Config/ is tracked.
+Package.resolved
+!Config/Package.resolved
+
+# Build artifacts
+*.app
+*.dmg
+*.zip
+*.dSYM
+
+# Sparkle private keys must never be committed
+sparkle_private_key
+macphone_sparkle_private_key*
+*.pem
+2026-*-implementiere-noch-sparkle-wie-bei-meinen-anderen.txt
+
 # Python BLE bridge
 bridge/.venv/
 **/__pycache__/

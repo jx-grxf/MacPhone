@@ -1,0 +1,67 @@
+name: MacPhone
+options:
+  bundleIdPrefix: dev.johannesgrof
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Sparkle EdDSA public key (NOT secret — it ships in every binary). This is
+    # the project's canonical release key; the matching private key lives only in
+    # GitHub secrets and signs the appcast. Hardcoding the default here means every
+    # build path (build_and_run.sh, plain xcodebuild, CI) embeds a valid key, so
+    # the updater always starts and can verify downloaded releases. CI still
+    # overrides it via MACPHONE_SPARKLE_PUBLIC_KEY (same value).
+    MACPHONE_SPARKLE_PUBLIC_KEY: "NqR/kXYJv7oe0c2Dhl4dH4XPRf4b8mJLScziQ33L3Ck="
+
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: "2.9.2"
+
+targets:
+  MacPhone:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/MacPhone
+      - path: Resources/bridge
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: Sparkle
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.johannesgrof.MacPhone
+        PRODUCT_NAME: MacPhone
+        ARCHS: arm64
+        ONLY_ACTIVE_ARCH: NO
+        # Generated Info.plist keys are merged on top of Config/Info.plist, which
+        # carries the custom Sparkle keys (SUFeedURL, SUPublicEDKey,
+        # SUEnableInstallerLauncherService) and the Bluetooth usage string that
+        # INFOPLIST_KEY_* cannot express cleanly.
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: Config/Info.plist
+        INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Johannes Grof"
+        INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.developer-tools"
+        INFOPLIST_KEY_CFBundleDisplayName: MacPhone
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: NO
+        # Hardened Runtime forces Library Validation (every framework needs the
+        # same Team ID). With an ad-hoc signature that kills the app, because
+        # Sparkle ships pre-signed with its own Team ID. So it stays OFF for
+        # unsigned previews; package_dmg.sh turns it back on for real Developer ID
+        # signing (MACPHONE_SIGN_IDENTITY) — which notarization requires anyway.
+        ENABLE_HARDENED_RUNTIME: NO
+        COMBINE_HIDPI_IMAGES: YES
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: "$(MACPHONE_WARNINGS_AS_ERRORS)"
