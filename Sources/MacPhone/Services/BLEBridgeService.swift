@@ -45,11 +45,12 @@ final class BLEBridgeService: NSObject {
 
     /// Optional M365 test device, exposed only when Test Devices is enabled in Settings.
     private(set) var scooterActive = false
-    private var scooterEngine = M365Engine()
+    private(set) var scooterProfileID = VirtualScooterCatalog.default.id
+    private var scooterEngine = VirtualScooter(profile: VirtualScooterCatalog.default)
     private let scooterPeripheralID = UUID()
-    private let scooterServiceUUID = CBUUID(string: M365Engine.nusService)
-    private let scooterTxUUID = CBUUID(string: M365Engine.nusTxNotify)
-    private let scooterRxUUID = CBUUID(string: M365Engine.nusRxWrite)
+    private let scooterServiceUUID = CBUUID(string: VirtualScooter.nusService)
+    private let scooterTxUUID = CBUUID(string: VirtualScooter.nusTxNotify)
+    private let scooterRxUUID = CBUUID(string: VirtualScooter.nusRxWrite)
 
     var isScanning: Bool {
         if case .scanning = connectionState { return true }
@@ -163,7 +164,9 @@ final class BLEBridgeService: NSObject {
 
     /// What is being mirrored, for the UI subtitle.
     var mirrorSourceLabel: String {
-        if scooterActive { return "Virtual M365 scooter" }
+        if scooterActive {
+            return VirtualScooterCatalog.profile(id: scooterProfileID).displayName
+        }
         if demoActive { return "Demo battery device" }
         if case .connected(let name) = connectionState { return name }
         return "no device — connect one or use Demo"
@@ -255,12 +258,13 @@ final class BLEBridgeService: NSObject {
 
     // MARK: Virtual scooter
 
-    func startVirtualScooter() {
+    func startVirtualScooter(profile: VirtualScooter.Profile = VirtualScooterCatalog.default) {
         guard !scooterActive, connectedPeripheralID == nil else { return }
         stopScan()
         if demoActive { stopDemo() }
         scooterActive = true
-        scooterEngine = M365Engine()
+        scooterProfileID = profile.id
+        scooterEngine = VirtualScooter(profile: profile)
 
         let transmit = BLECharacteristic(
             uuid: scooterTxUUID,
@@ -283,16 +287,16 @@ final class BLEBridgeService: NSObject {
             )
         ]
         connectedPeripheralID = scooterPeripheralID
-        connectionState = .connected(M365Engine.advertisedName)
+        connectionState = .connected(scooterEngine.advertisedName)
         advertisementByID[scooterPeripheralID] = CapturedAdvertisement(
-            localName: M365Engine.advertisedName,
-            manufacturerDataHex: M365Engine.manufacturerDataHex,
-            serviceUUIDs: [M365Engine.nusService],
+            localName: scooterEngine.advertisedName,
+            manufacturerDataHex: scooterEngine.manufacturerDataHex,
+            serviceUUIDs: [VirtualScooter.nusService],
             serviceData: [:]
         )
         append(
             .info,
-            "Virtual M365 scooter active — mirror it to the emulator, then connect in XiaoDash."
+            "Virtual scooter active — \(profile.displayName). Mirror it to the emulator, then connect in E-Tune."
         )
         if server.isRunning {
             server.broadcast(["type": "state", "value": "connected"])

@@ -39,7 +39,7 @@ struct UpdatesSettingsView: View {
             }
             Section("Test Devices") {
                 Toggle("Show test devices in Bluetooth", isOn: $testDevicesEnabled)
-                Text("Adds the virtual Xiaomi M365 scooter button to the Bluetooth screen. Test devices are disabled by default.")
+                Text("Adds the selectable virtual scooter catalog to the Bluetooth screen. Test devices are disabled by default.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
