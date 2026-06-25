@@ -1,5 +1,23 @@
 # MacPhone release notes
 
+## 0.2.1
+
+### Fixed
+
+- Restored the selectable virtual scooter catalog that was accidentally omitted
+  from the v0.2.0 build. The Bluetooth tab now offers Xiaomi M365, Pro 2, 1S,
+  and a low-battery/fault profile from the Test Scooter menu.
+- Restored the encrypted multi-model Ninebot test fixture and launcher for G2,
+  G3, G30, E/ES/F models, and ZT3 Pro.
+- Virtual scooter tuning writes persist and round-trip for KERS, cruise, tail
+  light, and custom-firmware field weakening.
+
+### Compatibility
+
+- macOS 14 or later. Apple silicon.
+- Ad-hoc signed developer preview — right-click the app and choose *Open* on first
+  launch, or open the DMG and drag MacPhone to Applications.
+
 ## 0.2.0
 
 ### Highlights

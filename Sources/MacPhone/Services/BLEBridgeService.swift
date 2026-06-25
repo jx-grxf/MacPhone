@@ -164,7 +164,9 @@ final class BLEBridgeService: NSObject {
 
     /// What is being mirrored, for the UI subtitle.
     var mirrorSourceLabel: String {
-        if scooterActive { return "Virtual M365 scooter" }
+        if scooterActive {
+            return VirtualScooterCatalog.profile(id: scooterProfileID).displayName
+        }
         if demoActive { return "Demo battery device" }
         if case .connected(let name) = connectionState { return name }
         return "no device — connect one or use Demo"
