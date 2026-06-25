@@ -15,6 +15,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+./script/verify_apple_toolchain.sh
+
 if [[ -z "${MACPHONE_VERSION:-}" ]]; then
   echo "error: MACPHONE_VERSION is required" >&2
   exit 1

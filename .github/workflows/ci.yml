@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify release metadata
         run: |
           git diff --check
@@ -26,10 +26,15 @@ jobs:
 
   build:
     name: Build
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      - name: Verify current Apple toolchain
+        run: ./script/verify_apple_toolchain.sh
 
       - name: Install tools
         run: brew install xcodegen
@@ -54,6 +59,20 @@ jobs:
       - name: Verify bundled release resources
         run: |
           app=".build/ci/Build/Products/Debug/MacPhone.app"
+          ./script/verify_binary_sdk.sh "$app/Contents/MacOS/MacPhone"
           test -f "$app/Contents/Resources/AppIcon.icns"
           test -f "$app/Contents/Resources/bridge/macphone_netsim_bridge.py"
           test ! -e "$app/Contents/Resources/bridge/.venv"
+          test ! -e "$app/Contents/Resources/bridge/m365_scooter.py"
+          test ! -e "$app/Contents/Resources/bridge/ninebot_scooter.py"
+
+      - name: Launch smoke test
+        run: |
+          set -euo pipefail
+          app=".build/ci/Build/Products/Debug/MacPhone.app"
+          "$app/Contents/MacOS/MacPhone" >.build/ci-launch.log 2>&1 &
+          pid=$!
+          sleep 5
+          kill -0 "$pid"
+          kill "$pid"
+          wait "$pid" || true
