@@ -33,6 +33,18 @@ One real device = one virtual peripheral (`MacPhone Bridge`) in the emulator. Re
 - **Rebuild vs. update.** The full service tree is rebuilt only on structural discovery; notifications update one characteristic in place and emit a single `value` event.
 - **Auto-subscribe.** The Python side subscribes every notify/indicate characteristic on the real device, so the stream flows without the app asking.
 
+## Virtual test scooters (no hardware)
+
+`VirtualScooter.swift` publishes an emulated scooter straight into the mirror path, so the Android
+app can be exercised end to end without a real device. It is selectable from the bridge UI ("Test
+Scooter" menu) via `VirtualScooterCatalog.profiles`:
+
+- **Xiaomi M365 (stock)**, **Pro 2 (custom firmware)**, **1S**, **M365 (low battery + fault)**.
+- All speak plaintext M365 (`55 AA`) over Nordic UART and advertise device type `0x20`.
+- The engine answers reads with stored register values **and persists writes** (KERS `0x7B`, cruise
+  `0x7C`, tail light `0x7D`, field weakening `0xBE`/`0xBF`), acking each — so tuning round-trips: a
+  later read reflects what was written. The CFW profile seeds field-weakening values; stock returns 0.
+
 ## Components
 
 - [[BLEBridgeService]] — CoreBluetooth central.
