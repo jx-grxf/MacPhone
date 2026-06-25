@@ -32,3 +32,8 @@ bridge/.venv/
 
 # Tooling environment (not for publication)
 .codex/
+
+
+## commandcode
+
+.commandcode/
