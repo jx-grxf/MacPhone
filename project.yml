@@ -12,8 +12,8 @@ settings:
   base:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
-    MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.1.1"
+    CURRENT_PROJECT_VERSION: "2"
     # Sparkle EdDSA public key (NOT secret — it ships in every binary). This is
     # the project's canonical release key; the matching private key lives only in
     # GitHub secrets and signs the appcast. Hardcoding the default here means every

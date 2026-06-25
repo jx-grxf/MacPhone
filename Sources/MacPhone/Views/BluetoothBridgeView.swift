@@ -3,6 +3,7 @@ import CoreBluetooth
 
 struct BluetoothBridgeView: View {
     let ble: BLEBridgeService
+    @AppStorage(AppPreferences.testDevicesEnabled) private var testDevicesEnabled = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -22,9 +23,15 @@ struct BluetoothBridgeView: View {
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear { ble.start() }
+        .onChange(of: testDevicesEnabled) { _, enabled in
+            if !enabled, ble.scooterActive {
+                ble.leaveCurrentDevice()
+            }
+        }
     }
 
     private var stopLabel: String {
+        if ble.scooterActive { return "Stop Scooter" }
         if ble.demoActive { return "Stop Demo" }
         return "Disconnect"
     }
@@ -41,7 +48,7 @@ struct BluetoothBridgeView: View {
 
             Spacer()
 
-            if ble.demoActive || ble.connectedPeripheralID != nil {
+            if ble.demoActive || ble.scooterActive || ble.connectedPeripheralID != nil {
                 // One control to fully reset back to scanning, whatever the state.
                 Button(role: .destructive) { ble.leaveCurrentDevice() } label: {
                     Label(stopLabel, systemImage: "xmark.circle")
@@ -51,6 +58,12 @@ struct BluetoothBridgeView: View {
                     Label("Stop", systemImage: "stop.circle")
                 }
             } else {
+                if testDevicesEnabled {
+                    Button { ble.startVirtualScooter() } label: {
+                        Label("Test Scooter", systemImage: "scooter")
+                    }
+                    .help("Publish an emulated Xiaomi M365 scooter for testing with XiaoDash.")
+                }
                 Button { ble.startDemo() } label: {
                     Label("Demo Device", systemImage: "wand.and.stars")
                 }
