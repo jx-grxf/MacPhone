@@ -12,8 +12,10 @@ enum AndroidAVDPerformance {
         }
     }
 
-    /// Prefers the platform's accelerated CPU and GPU backends while allowing the
-    /// emulator to select a compatible fallback when a specific backend is unavailable.
+    /// Pins the platform's accelerated CPU and GPU backends. `hw.gpu.mode=host`
+    /// keeps rendering on the host Metal GPU (ANGLE); the emulator's `auto` heuristic
+    /// is unreliable on Apple silicon and silently degrades to SwiftShader (software
+    /// Vulkan), which pegs the CPU and makes the VM crawl.
     static func apply(toAVDNamed name: String) throws {
         let config = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".android/avd", isDirectory: true)
@@ -34,7 +36,7 @@ enum AndroidAVDPerformance {
 
         let performanceValues = [
             "hw.gpu.enabled": "yes",
-            "hw.gpu.mode": "auto",
+            "hw.gpu.mode": "host",
             "hw.cpu.ncore": String(coreCount),
             "hw.ramSize": String(ramMiB),
             "vm.heapSize": "384M",
