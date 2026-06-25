@@ -242,7 +242,10 @@ The app is a plain SwiftPM executable; there is no `.xcodeproj`.
 ./script/build_and_run.sh --verify     # launch and assert the process is alive
 ```
 
-`build_and_run.sh` runs `swift build`, copies the binary into a hand-rolled `.app` bundle, and writes an `Info.plist` (bundle id `dev.johannesgrof.MacPhone`, `LSMinimumSystemVersion 14.0`, `NSBluetoothAlwaysUsageDescription`). Plain `swift build` / `swift run` also work for the executable.
+`script/build_and_run.sh` generates the Xcode project with XcodeGen, builds the
+native app through `xcodebuild`, and launches the resulting `.app`. This keeps
+local development aligned with CI, Sparkle packaging, asset catalogs, and the
+current Apple SDK.
 
 For the BLE bridge, set up the Python side once and run a test:
 
