@@ -59,10 +59,19 @@ struct BluetoothBridgeView: View {
                 }
             } else {
                 if testDevicesEnabled {
-                    Button { ble.startVirtualScooter() } label: {
+                    Menu {
+                        ForEach(VirtualScooterCatalog.profiles) { profile in
+                            Button {
+                                ble.startVirtualScooter(profile: profile)
+                            } label: {
+                                Text(profile.displayName)
+                                Text(profile.summary)
+                            }
+                        }
+                    } label: {
                         Label("Test Scooter", systemImage: "scooter")
                     }
-                    .help("Publish an emulated Xiaomi M365 scooter for testing with XiaoDash.")
+                    .help("Publish an emulated scooter for testing with E-Tune. Pick a model to cover different telemetry, tuning and field-weakening cases.")
                 }
                 Button { ble.startDemo() } label: {
                     Label("Demo Device", systemImage: "wand.and.stars")
