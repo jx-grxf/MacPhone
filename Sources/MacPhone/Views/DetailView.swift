@@ -13,9 +13,9 @@ struct DetailView: View {
             case .setup:
                 SetupView(store: store)
             case .android:
-                DeviceListView(title: "Android", devices: store.androidDevices, store: store, allowsAdd: true)
+                DeviceListView(title: "Android", platform: .android, devices: store.androidDevices, store: store)
             case .ios:
-                DeviceListView(title: "iOS Simulator", devices: store.iosDevices, store: store, allowsAdd: false)
+                DeviceListView(title: "iOS Simulator", platform: .ios, devices: store.iosDevices, store: store)
             case .bluetooth:
                 BluetoothBridgeView(ble: ble)
             }
@@ -58,6 +58,7 @@ private struct OverviewView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+
 }
 
 /// Compact, intrinsically-sized device list for embedding inside a ScrollView.
@@ -139,14 +140,15 @@ private struct MetricTile: View {
 
 private struct DeviceListView: View {
     let title: String
+    let platform: MobilePlatform
     let devices: [MobileDevice]
     let store: DeviceStore
-    var allowsAdd: Bool = false
 
-    @State private var showAddSheet = false
+    @State private var showAndroidSheet = false
+    @State private var showIOSSheet = false
 
     private var showsHeadlessToggle: Bool {
-        allowsAdd || devices.contains { $0.platform == .android }
+        platform == .android
     }
 
     var body: some View {
@@ -162,22 +164,23 @@ private struct DeviceListView: View {
                         .help("Boot new Android emulators without a window.")
                     }
                 }
-                if allowsAdd {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            store.provisionFinished = false
-                            store.provisionError = nil
-                            store.provisionLog = []
-                            showAddSheet = true
-                        } label: {
-                            Label("Add Emulator", systemImage: "plus")
-                        }
-                        .disabled(store.isProvisioning)
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        prepareProvisioning()
+                    } label: {
+                        Label(
+                            platform == .android ? "Add Emulator" : "Add Simulator",
+                            systemImage: "plus"
+                        )
                     }
+                    .disabled(store.isProvisioning || store.isProvisioningIOS)
                 }
             }
-            .sheet(isPresented: $showAddSheet) {
+            .sheet(isPresented: $showAndroidSheet) {
                 AndroidProvisionSheet(store: store)
+            }
+            .sheet(isPresented: $showIOSSheet) {
+                IOSSimulatorProvisionSheet(store: store)
             }
     }
 
@@ -188,20 +191,18 @@ private struct DeviceListView: View {
                 Label("No \(title) Devices", systemImage: "rectangle.stack.badge.minus")
             } description: {
                 Text(allowsAdd
-                    ? "Use “Add Emulator” to download a system image and create one — no Android Studio needed."
-                    : "Refresh after installing Android Studio or Xcode runtimes.")
+                    ? "Use the + button to download an image and create an emulator."
+                    : "Use the + button to install an iOS runtime and create a simulator.")
             } actions: {
-                if allowsAdd {
-                    Button {
-                        store.provisionFinished = false
-                        store.provisionError = nil
-                        store.provisionLog = []
-                        showAddSheet = true
-                    } label: {
-                        Label("Add Emulator", systemImage: "plus")
-                    }
-                    .disabled(store.isProvisioning)
+                Button {
+                    prepareProvisioning()
+                } label: {
+                    Label(
+                        platform == .android ? "Add Emulator" : "Add Simulator",
+                        systemImage: "plus"
+                    )
                 }
+                .disabled(store.isProvisioning || store.isProvisioningIOS)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -237,6 +238,22 @@ private struct DeviceListView: View {
             }
         }
     }
+
+    private var allowsAdd: Bool { platform == .android }
+
+    private func prepareProvisioning() {
+        if platform == .android {
+            store.provisionFinished = false
+            store.provisionError = nil
+            store.provisionLog = []
+            showAndroidSheet = true
+        } else {
+            store.iosProvisionFinished = false
+            store.iosProvisionError = nil
+            store.iosProvisionLog = []
+            showIOSSheet = true
+        }
+    }
 }
 
 private struct DeviceActionButton: View {
@@ -258,14 +275,11 @@ private struct DeviceActionButton: View {
                 }
 
                 Menu {
-                    if device.canBoot {
+                    if device.platform == .android, device.canBoot {
                         Button("Cold Boot") { Task { await store.coldBoot(device) } }
                     }
                     if device.isRunning {
                         Button("Stop") { Task { await store.stop(device) } }
-                    }
-                    if device.platform == .android, device.isRunning {
-                        Button("Install BLE Radar") { Task { await store.installBLERadar(onto: device) } }
                     }
                     if device.canWipe {
                         Button("Wipe Data…", role: .destructive) { confirmingWipe = true }
@@ -273,6 +287,7 @@ private struct DeviceActionButton: View {
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
+                .accessibilityLabel("More actions for \(device.name)")
                 .menuStyle(.borderlessButton)
                 .frame(width: 28)
                 .confirmationDialog(
@@ -289,4 +304,3 @@ private struct DeviceActionButton: View {
         }
     }
 }
-

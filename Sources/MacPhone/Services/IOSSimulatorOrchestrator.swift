@@ -61,8 +61,13 @@ struct IOSSimulatorOrchestrator {
     }
 
     private func readableRuntime(_ runtime: String) -> String {
-        runtime
-            .replacingOccurrences(of: "com.apple.CoreSimulator.SimRuntime.", with: "")
-            .replacingOccurrences(of: "-", with: " ")
+        let identifier = runtime.replacingOccurrences(
+            of: "com.apple.CoreSimulator.SimRuntime.",
+            with: ""
+        )
+        guard identifier.hasPrefix("iOS-") else {
+            return identifier.replacingOccurrences(of: "-", with: " ")
+        }
+        return "iOS " + identifier.dropFirst(4).replacingOccurrences(of: "-", with: ".")
     }
 }

@@ -122,6 +122,9 @@ struct AndroidProvisioner {
         )
         guard createCode == 0 else { throw ProvisionError.avdFailed(createCode) }
 
+        onLog("Enabling automatic hardware CPU and GPU acceleration…")
+        try AndroidAVDPerformance.apply(toAVDNamed: name)
+
         onLog("Done. Emulator \"\(name)\" is ready to boot.")
     }
 

@@ -44,9 +44,6 @@ final class NetsimBridgeProcess {
             candidates.append(dir.appendingPathComponent("bridge"))
             dir = dir.deletingLastPathComponent()
         }
-        candidates.append(URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Projects/Private/Private-Projects/MacPhone/bridge"))
-
         return candidates.first(where: hasScript)
     }
 

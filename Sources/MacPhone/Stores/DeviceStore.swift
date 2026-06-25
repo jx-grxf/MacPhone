@@ -6,37 +6,25 @@ import Observation
 final class DeviceStore {
     private let android = AndroidOrchestrator()
     private let ios = IOSSimulatorOrchestrator()
+    private let iosProvisioner = IOSSimulatorProvisioner()
     private let control = DeviceControlService()
     private let provisioner = AndroidProvisioner()
     private let setup = SetupService()
-    private let radar = BLERadarInstaller()
-
-    /// arm64 on Apple silicon, x86_64 on Intel — used for the one-click image.
-    static var defaultABI: String {
-        #if arch(arm64)
-        "arm64-v8a"
-        #else
-        "x86_64"
-        #endif
-    }
-
-    /// The "Pixel like mine": a Play-Store-enabled Pixel 7 on the latest image,
-    /// used by the one-click `installDefaultPixelWithRadar()` flow.
-    static var defaultPixelRequest: AndroidProvisioner.Request {
-        AndroidProvisioner.Request(
-            name: "MacPhone_Pixel",
-            apiLevel: 35,
-            tag: "google_apis_playstore",
-            abi: defaultABI,
-            device: "pixel_7"
-        )
-    }
 
     /// Live state for the "Add Android emulator" flow.
     var isProvisioning = false
     var provisionLog: [String] = []
     var provisionError: String?
     var provisionFinished = false
+
+    /// Live state for iOS runtime download and simulator creation.
+    var iosCatalog = IOSSimulatorProvisioner.Catalog.empty
+    var isLoadingIOSCatalog = false
+    var isProvisioningIOS = false
+    var isIOSRuntimeDownloadActive = false
+    var iosProvisionLog: [String] = []
+    var iosProvisionError: String?
+    var iosProvisionFinished = false
 
     /// Setup / dependency state.
     var dependencies: [Dependency] = []
@@ -191,84 +179,102 @@ final class DeviceStore {
         if provisionLog.count > 800 { provisionLog.removeFirst(provisionLog.count - 800) }
     }
 
-    // MARK: One-click Pixel + BLE Radar
+    // MARK: iOS Simulator provisioning
 
-    /// End-to-end "quick start": create the default Pixel AVD (reusing it if it
-    /// already exists), boot it with a window, wait for Android to finish booting,
-    /// then download and install the BLE Radar scanner onto it. Streams to the
-    /// shared provision log so the existing progress UI shows every step.
     @MainActor
-    func installDefaultPixelWithRadar() async {
-        guard !isProvisioning else { return }
-        isProvisioning = true
-        provisionFinished = false
-        provisionError = nil
-        provisionLog = ["Setting up your Pixel + BLE Radar…"]
-        defer { isProvisioning = false }
-
-        let onLog: @Sendable (String) -> Void = { line in
-            Task { @MainActor in self.appendProvisionLog(line) }
-        }
-        let request = Self.defaultPixelRequest
-
+    func loadIOSCatalog() async {
+        guard !isLoadingIOSCatalog else { return }
+        isLoadingIOSCatalog = true
+        isIOSRuntimeDownloadActive = IOSSimulatorProvisioner.runtimeDownloadInProgress
+        defer { isLoadingIOSCatalog = false }
         do {
-            // 1) Create the AVD. A pre-existing one is fine — reuse it.
-            do {
-                try await provisioner.provision(request, onLog: onLog)
-            } catch AndroidProvisioner.ProvisionError.nameTaken {
-                onLog("Emulator \"\(request.sanitizedName)\" already exists — reusing it.")
-            }
-
-            await refresh()
-            guard let device = androidDevices.first(where: { $0.name == request.sanitizedName }) else {
-                throw QuickStartError.deviceNotFound(request.sanitizedName)
-            }
-
-            // 2) Boot it (always with a window so BLE Radar is usable) and find its serial.
-            let serial: String
-            if device.isRunning, device.identifier.hasPrefix("emulator-") {
-                serial = device.identifier
-                onLog("\(device.name) is already running (\(serial)).")
-            } else {
-                let before = Set(await control.emulatorSerials())
-                onLog("Booting \(device.name)…")
-                try await control.boot(device, headless: false)
-                onLog("Waiting for the emulator to come online…")
-                serial = try await control.waitForNewEmulator(excluding: before)
-            }
-
-            onLog("Waiting for Android to finish booting (\(serial))…")
-            try await control.waitForBootCompleted(serial: serial)
-
-            // 3) Install BLE Radar.
-            try await radar.install(onto: serial, onLog: onLog)
-
-            provisionFinished = true
-            onLog("Done — your Pixel is booted with BLE Radar installed.")
+            iosCatalog = try await iosProvisioner.catalog()
+            iosProvisionError = nil
         } catch {
-            provisionError = error.localizedDescription
-            appendProvisionLog("Error: \(error.localizedDescription)")
+            iosCatalog = .empty
+            iosProvisionError = error.localizedDescription
         }
+    }
 
+    @MainActor
+    func monitorIOSRuntimeDownload() async {
+        while IOSSimulatorProvisioner.runtimeDownloadInProgress {
+            isIOSRuntimeDownloadActive = true
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+        }
+        guard isIOSRuntimeDownloadActive else { return }
+        isIOSRuntimeDownloadActive = false
+        await loadIOSCatalog()
+        refreshDependencies()
         await refresh()
     }
 
-    /// Install BLE Radar onto an already-running Android emulator.
     @MainActor
-    func installBLERadar(onto device: MobileDevice) async {
-        guard device.platform == .android, device.isRunning else { return }
-        await perform(device) {
-            try await self.radar.install(onto: device.identifier) { _ in }
+    func downloadIOSRuntime() async {
+        guard !isProvisioningIOS else { return }
+        if IOSSimulatorProvisioner.runtimeDownloadInProgress {
+            isIOSRuntimeDownloadActive = true
+            iosProvisionError = nil
+            iosProvisionLog = ["An iOS runtime download is already running in Xcode."]
+            return
+        }
+        isProvisioningIOS = true
+        isIOSRuntimeDownloadActive = true
+        iosProvisionFinished = false
+        iosProvisionError = nil
+        iosProvisionLog = []
+        defer {
+            isProvisioningIOS = false
+            isIOSRuntimeDownloadActive = IOSSimulatorProvisioner.runtimeDownloadInProgress
+        }
+        let onLog: @Sendable (String) -> Void = { line in
+            Task { @MainActor in self.appendIOSProvisionLog(line) }
+        }
+        do {
+            try await iosProvisioner.downloadLatestRuntime(onLog: onLog)
+            await loadIOSCatalog()
+            refreshDependencies()
+        } catch {
+            iosProvisionError = error.localizedDescription
+            appendIOSProvisionLog("Error: \(error.localizedDescription)")
         }
     }
 
-    enum QuickStartError: LocalizedError {
-        case deviceNotFound(String)
-        var errorDescription: String? {
-            switch self {
-            case .deviceNotFound(let name):
-                "Created the AVD but \"\(name)\" did not show up. Try Refresh, then boot it manually."
+    @MainActor
+    func createIOSSimulator(
+        _ request: IOSSimulatorProvisioner.Request,
+        bootAfterCreate: Bool
+    ) async {
+        guard !isProvisioningIOS else { return }
+        isProvisioningIOS = true
+        iosProvisionFinished = false
+        iosProvisionError = nil
+        iosProvisionLog = ["Starting…"]
+        defer { isProvisioningIOS = false }
+        let onLog: @Sendable (String) -> Void = { line in
+            Task { @MainActor in self.appendIOSProvisionLog(line) }
+        }
+        do {
+            let udid = try await iosProvisioner.create(request, onLog: onLog)
+            iosProvisionFinished = true
+            await refresh()
+            if bootAfterCreate,
+               let simulator = iosDevices.first(where: { $0.identifier == udid }) {
+                appendIOSProvisionLog("Booting \(simulator.name)…")
+                await boot(simulator)
             }
+        } catch {
+            iosProvisionError = error.localizedDescription
+            appendIOSProvisionLog("Error: \(error.localizedDescription)")
+        }
+    }
+
+    @MainActor
+    private func appendIOSProvisionLog(_ line: String) {
+        iosProvisionLog.append(line)
+        if iosProvisionLog.count > 800 {
+            iosProvisionLog.removeFirst(iosProvisionLog.count - 800)
         }
     }
 

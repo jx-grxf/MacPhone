@@ -5,14 +5,11 @@ import AppKit
 /// missing ones with one click, so a non-technical user can get the fleet running.
 struct SetupView: View {
     let store: DeviceStore
-    @State private var showQuickStart = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
-
-                quickStartCard
 
                 VStack(spacing: 0) {
                     ForEach(Array(store.dependencies.enumerated()), id: \.element.id) { index, dep in
@@ -30,43 +27,6 @@ struct SetupView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear { store.refreshDependencies() }
-        .sheet(isPresented: $showQuickStart) {
-            QuickStartSheet(store: store)
-        }
-    }
-
-    private var quickStartCard: some View {
-        HStack(alignment: .center, spacing: 14) {
-            Image(systemName: "bolt.badge.clock")
-                .font(.system(size: 28))
-                .foregroundStyle(.tint)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Quick start")
-                    .font(.headline)
-                Text("Create a Play-enabled Pixel emulator, boot it, and install the BLE Radar "
-                     + "scanner — all in one click.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            Button {
-                store.provisionFinished = false
-                store.provisionError = nil
-                store.provisionLog = []
-                showQuickStart = true
-            } label: {
-                Label("Install Pixel + BLE Radar", systemImage: "square.and.arrow.down")
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(store.isProvisioning || !store.allRequiredSatisfied)
-            .help(store.allRequiredSatisfied
-                  ? "Provision a Pixel and install BLE Radar."
-                  : "Finish the required setup below first.")
-        }
-        .padding(16)
-        .background(.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.tint.opacity(0.25)))
     }
 
     private var header: some View {
@@ -75,7 +35,7 @@ struct SetupView: View {
                 Text("Get set up")
                     .font(.title2.weight(.semibold))
                 Text(store.allRequiredSatisfied
-                    ? "All required tools are installed — you can add Android emulators."
+                    ? "All required Android and iOS tools are installed."
                     : "Install the missing pieces below. Most are one click.")
                     .foregroundStyle(store.allRequiredSatisfied ? Color.green : Color.secondary)
             }
@@ -184,7 +144,8 @@ private struct DependencyRow: View {
                         .controlSize(.small)
                 }
             }
-        case .brewCask, .brewFormula, .sdkmanager, .bootstrapTools, .bridgeVenv:
+        case .brewCask, .brewFormula, .sdkmanager, .bootstrapTools, .bridgeVenv,
+             .xcodePlatform:
             Button {
                 Task { await store.runFix(for: dependency) }
             } label: {

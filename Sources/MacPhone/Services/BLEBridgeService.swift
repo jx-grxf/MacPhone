@@ -1,6 +1,6 @@
 import Foundation
 import Observation
-import CoreBluetooth
+@preconcurrency import CoreBluetooth
 
 /// CoreBluetooth central-role bridge running on the Mac's internal radio — no external
 /// USB controller required. It scans for, connects to and exchanges GATT data with a
@@ -43,15 +43,6 @@ final class BLEBridgeService: NSObject {
     private let demoControlUUID = CBUUID(string: "FFF1")
     private let demoPeripheralID = UUID()
 
-    /// Virtual scooter mode: an in-app emulated M365 (Nordic UART + the unencrypted M365
-    /// protocol) so the mirror path can be tested against XiaoDash without real hardware.
-    private(set) var scooterActive = false
-    private var scooterEngine = M365Engine()
-    private let scooterPeripheralID = UUID()
-    private let scooterServiceUUID = CBUUID(string: M365Engine.nusService)
-    private let scooterTxUUID = CBUUID(string: M365Engine.nusTxNotify)
-    private let scooterRxUUID = CBUUID(string: M365Engine.nusRxWrite)
-
     var isScanning: Bool {
         if case .scanning = connectionState { return true }
         return central?.isScanning ?? false
@@ -79,7 +70,7 @@ final class BLEBridgeService: NSObject {
     /// Keep CBPeripheral references alive so connection callbacks fire.
     private var peripheralCache: [UUID: CBPeripheral] = [:]
     /// The advertisement seen for each peripheral, so the netsim mirror can re-broadcast the
-    /// real device's name + manufacturer data — which is what scooter apps (XiaoDash) match on.
+    /// real device's name + manufacturer data for client-side device recognition.
     private var advertisementByID: [UUID: CapturedAdvertisement] = [:]
 
     struct CapturedAdvertisement {
@@ -155,7 +146,6 @@ final class BLEBridgeService: NSObject {
     func leaveCurrentDevice() {
         if isMirroring { stopEmulatorMirror() }
         if demoActive { stopDemo() }
-        if scooterActive { stopVirtualScooter() }
         if connectedPeripheral != nil { disconnect() }
         // Land back on a live scan rather than an empty list, so the user is never stranded
         // with no way to pick another device (matches the "Disconnect & Scan" affordance).
@@ -164,7 +154,6 @@ final class BLEBridgeService: NSObject {
 
     /// What is being mirrored, for the UI subtitle.
     var mirrorSourceLabel: String {
-        if scooterActive { return "Virtual M365 scooter" }
         if demoActive { return "Demo battery device" }
         if case .connected(let name) = connectionState { return name }
         return "no device — connect one or use Demo"
@@ -254,72 +243,6 @@ final class BLEBridgeService: NSObject {
         append(.outgoing, "DEMO WRITE \(characteristic.uuid.uuidString) ← \(hex)")
     }
 
-    // MARK: Virtual scooter
-
-    func startVirtualScooter() {
-        guard !scooterActive else { return }
-        if connectedPeripheralID != nil { disconnect() }
-        if demoActive { stopDemo() }
-        scooterActive = true
-        scooterEngine = M365Engine()
-        let tx = BLECharacteristic(uuid: scooterTxUUID, serviceUUID: scooterServiceUUID,
-                                   properties: ["notify"], isNotifying: false, lastValueHex: nil)
-        let rx = BLECharacteristic(uuid: scooterRxUUID, serviceUUID: scooterServiceUUID,
-                                   properties: ["write", "writeNR"], isNotifying: false, lastValueHex: nil)
-        services = [BLEService(uuid: scooterServiceUUID, characteristics: [tx, rx])]
-        connectedPeripheralID = scooterPeripheralID
-        connectionState = .connected(M365Engine.advertisedName)
-        // Register the advertisement so the netsim mirror re-broadcasts the recognition data
-        // (manufacturer company 0x424E + device-type byte) XiaoDash matches the model on.
-        advertisementByID[scooterPeripheralID] = CapturedAdvertisement(
-            localName: M365Engine.advertisedName,
-            manufacturerDataHex: M365Engine.manufacturerDataHex,
-            serviceUUIDs: [M365Engine.nusService],
-            serviceData: [:]
-        )
-        append(.info, "Virtual M365 scooter active — mirror it to the emulator, then connect in XiaoDash.")
-        if server.isRunning {
-            server.broadcast(["type": "state", "value": "connected"])
-            server.broadcast(gattPayload())
-        }
-    }
-
-    func stopVirtualScooter() {
-        guard scooterActive else { return }
-        scooterActive = false
-        advertisementByID[scooterPeripheralID] = nil
-        services.removeAll()
-        connectedPeripheralID = nil
-        connectionState = .disconnected
-        append(.info, "Virtual scooter stopped.")
-        if server.isRunning { server.broadcast(["type": "state", "value": "disconnected"]) }
-    }
-
-    private func scooterSetNotify(_ enabled: Bool, for characteristic: BLECharacteristic) {
-        updateValue(serviceUUID: characteristic.serviceUUID, characteristicUUID: characteristic.uuid,
-                    hex: nil, isNotifying: enabled)
-        append(.info, "SCOOTER notifications \(enabled ? "enabled" : "disabled") for \(characteristic.uuid.uuidString).")
-    }
-
-    private func scooterWrite(hex: String, to characteristic: BLECharacteristic) {
-        guard let data = Data(hexString: hex) else { append(.error, "Invalid hex payload."); return }
-        append(.outgoing, "SCOOTER WRITE \(characteristic.uuid.uuidString) ← \(hex)")
-        for reply in scooterEngine.reply(to: [UInt8](data)) {
-            let replyHex = Data(reply).hexString
-            updateValue(serviceUUID: scooterServiceUUID, characteristicUUID: scooterTxUUID,
-                        hex: replyHex, isNotifying: true)
-            append(.incoming, "SCOOTER NOTIFY → \(replyHex)")
-            if server.isRunning {
-                server.broadcast([
-                    "type": "notification",
-                    "service": scooterServiceUUID.uuidString,
-                    "characteristic": scooterTxUUID.uuidString,
-                    "value": replyHex
-                ])
-            }
-        }
-    }
-
     /// Route commands coming from the emulator side into GATT operations.
     private func wireServer() {
         // Replay the current connection state + GATT to any client that joins late.
@@ -382,8 +305,7 @@ final class BLEBridgeService: NSObject {
                 ] as [String: Any]
             }
         ]
-        // Forward the real device's advertisement so the netsim mirror can re-broadcast its
-        // name + manufacturer data; scooter apps (XiaoDash) recognise the model from that.
+        // Forward the real device's advertisement so the netsim mirror can re-broadcast it.
         if let id = connectedPeripheralID, let ad = advertisementByID[id] {
             var advertisement: [String: Any] = ["serviceUUIDs": ad.serviceUUIDs]
             if let localName = ad.localName { advertisement["localName"] = localName }
@@ -430,11 +352,10 @@ final class BLEBridgeService: NSObject {
         central.cancelPeripheralConnection(peripheral)
     }
 
-    /// A virtual Android GATT client maps to one real scooter transport session. Ninebot
-    /// dashboards retain their crypto counter for the lifetime of the CoreBluetooth link, so a
-    /// new Android client must start with a fresh real link as well.
+    /// A new virtual Android GATT client gets a fresh real BLE session so
+    /// application-layer session state cannot leak across clients.
     private func resetRealDeviceSession() {
-        guard !demoActive, !scooterActive,
+        guard !demoActive,
               let central, let peripheral = connectedPeripheral,
               reconnectAfterDisconnect == nil else { return }
         reconnectAfterDisconnect = peripheral
@@ -445,7 +366,6 @@ final class BLEBridgeService: NSObject {
     // MARK: GATT operations
 
     func readValue(for characteristic: BLECharacteristic) {
-        if scooterActive { return }   // M365 chars are write/notify only
         if demoActive { demoRead(characteristic); return }
         guard let cb = cbCharacteristic(for: characteristic) else { return }
         pendingReads.insert(characteristic.id)
@@ -454,7 +374,6 @@ final class BLEBridgeService: NSObject {
     }
 
     func setNotify(_ enabled: Bool, for characteristic: BLECharacteristic) {
-        if scooterActive { scooterSetNotify(enabled, for: characteristic); return }
         if demoActive { demoSetNotify(enabled, for: characteristic); return }
         guard let cb = cbCharacteristic(for: characteristic) else { return }
         connectedPeripheral?.setNotifyValue(enabled, for: cb)
@@ -466,7 +385,6 @@ final class BLEBridgeService: NSObject {
             append(.error, "Invalid hex payload.")
             return
         }
-        if scooterActive { scooterWrite(hex: data.hexString, to: characteristic); return }
         if demoActive { demoWrite(hex: data.hexString, to: characteristic); return }
         write(data, to: characteristic, withResponse: withResponse)
     }

@@ -227,7 +227,7 @@ class BridgeClient:
     async def read(self, service, uuid):
         if self.on_android_activity:
             self.on_android_activity()
-        print(f"[android -> scooter] READ  {service}/{uuid}")
+        print(f"[android -> device] READ  {service}/{uuid}")
         fut = asyncio.get_event_loop().create_future()
         self._read_waiters.setdefault(_route_key(service, uuid), []).append(fut)
         self._send({"cmd": "read", "service": service, "characteristic": uuid})
@@ -239,7 +239,7 @@ class BridgeClient:
     def write(self, service, uuid, data, with_response):
         if self.on_android_activity:
             self.on_android_activity()
-        print(f"[android -> scooter] WRITE {service}/{uuid} "
+        print(f"[android -> device] WRITE {service}/{uuid} "
               f"{'with-response' if with_response else 'without-response'}: {data.hex(' ')}")
         self._send({
             "cmd": "write",
@@ -422,7 +422,7 @@ async def main():
         def on_value(key, char_uuid, data):
             characteristic = char_by_key.get(key) or char_by_key.get(char_uuid.lower())
             if characteristic is not None:
-                print(f"[scooter -> android] NOTIFY {key}: {data.hex(' ')}")
+                print(f"[device -> android] NOTIFY {key}: {data.hex(' ')}")
                 asyncio.create_task(device.notify_subscribers(characteristic, value=data))
 
         bridge.on_value = on_value
