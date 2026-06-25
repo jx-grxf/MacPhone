@@ -18,7 +18,8 @@ MacPhone is a **SwiftPM executable** (`Package.swift`, target `MacPhone`, macOS 
 ./script/build_and_run.sh --verify   # launch and assert the process is alive
 ```
 
-The script runs `swift build`, copies the binary into a hand-rolled `.app` under `dist/`, and writes an `Info.plist`:
+The script generates the Xcode project with XcodeGen, builds it with
+`xcodebuild`, and launches the native `.app`:
 
 | Key | Value |
 |---|---|
@@ -27,7 +28,8 @@ The script runs `swift build`, copies the binary into a hand-rolled `.app` under
 | `NSBluetoothAlwaysUsageDescription` | Bluetooth bridge usage string |
 | `NSPrincipalClass` | `NSApplication` |
 
-Plain `swift build` / `swift run` also work.
+Use this path for local work so the build matches CI, Sparkle packaging, and the
+asset-catalog configuration.
 
 ## BLE bridge (Python side)
 

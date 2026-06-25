@@ -39,7 +39,7 @@ jobs:
       commit: ${{ steps.tag.outputs.commit }}
     steps:
       - name: Checkout history
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -106,25 +106,24 @@ jobs:
   build-release:
     name: Build and publish release
     needs: preflight
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 50
     environment: release
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
     permissions:
       contents: write
       id-token: write
       attestations: write
     steps:
       - name: Checkout tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.preflight.outputs.tag }}
           fetch-depth: 0
 
-      - name: Show toolchain
-        run: |
-          sw_vers
-          xcodebuild -version
-          swift --version
+      - name: Verify current Apple toolchain
+        run: ./script/verify_apple_toolchain.sh
 
       - name: Install tools
         run: brew install xcodegen create-dmg
@@ -187,7 +186,7 @@ jobs:
             dist/RELEASE_NOTES.md
 
       - name: Attest release artifacts
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/MacPhone-*.dmg
@@ -196,7 +195,7 @@ jobs:
             dist/SHA256SUMS
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: MacPhone-${{ needs.preflight.outputs.version }}
           path: |

@@ -21,6 +21,8 @@ struct Dependency: Identifiable, Equatable {
         case bootstrapTools(label: String)
         /// Create the bridge Python venv and install Bumble.
         case bridgeVenv(label: String)
+        /// Download the latest simulator runtime for an Apple platform.
+        case xcodePlatform(platform: String, label: String)
         /// Nothing automatic — point the user at a page / command to run themselves.
         case manual(label: String, url: String?, command: String?)
 
@@ -30,6 +32,7 @@ struct Dependency: Identifiable, Equatable {
             case .brewCask(_, let label), .brewFormula(_, let label),
                  .sdkmanager(_, let label),
                  .bootstrapTools(let label), .bridgeVenv(let label), .manual(let label, _, _): label
+            case .xcodePlatform(_, let label): label
             }
         }
     }
@@ -54,6 +57,34 @@ struct SetupService {
         ["/Applications/Android Studio.app",
          NSHomeDirectory() + "/Applications/Android Studio.app"]
             .contains { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    static func hasIOSSimulatorRuntime() -> Bool {
+        guard IOSSimulatorProvisioner.fullXcodeInstalled else { return false }
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        process.arguments = ["simctl", "list", "runtimes", "--json"]
+        process.standardOutput = output
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return false
+        }
+        guard process.terminationStatus == 0,
+              let root = try? JSONSerialization.jsonObject(
+                with: output.fileHandleForReading.readDataToEndOfFile()
+              ) as? [String: Any],
+              let runtimes = root["runtimes"] as? [[String: Any]]
+        else {
+            return false
+        }
+        return runtimes.contains {
+            ($0["identifier"] as? String)?.contains("SimRuntime.iOS") == true
+                && ($0["isAvailable"] as? Bool ?? true)
+        }
     }
 
     /// Build the current checklist. Pure filesystem inspection — cheap to call on appear.
@@ -131,6 +162,38 @@ struct SetupService {
             fix: sdk.hasEmulator ? .none : .sdkmanager(packages: ["emulator"], label: "Install emulator")
         ))
 
+        let hasXcode = IOSSimulatorProvisioner.fullXcodeInstalled
+        items.append(Dependency(
+            id: "xcode",
+            title: "Xcode",
+            detail: hasXcode
+                ? "Full Xcode is installed and selected."
+                : "Missing. Required to create and run iOS simulators.",
+            satisfied: hasXcode,
+            required: true,
+            fix: hasXcode ? .none : .manual(
+                label: "Get Xcode",
+                url: "https://apps.apple.com/app/xcode/id497799835",
+                command: nil
+            )
+        ))
+
+        let hasIOSRuntime = Self.hasIOSSimulatorRuntime()
+        items.append(Dependency(
+            id: "ios-runtime",
+            title: "iOS Simulator runtime",
+            detail: hasIOSRuntime
+                ? "At least one iOS runtime is installed."
+                : (hasXcode
+                    ? "Missing. Download the latest runtime from Apple."
+                    : "Install Xcode first, then download an iOS runtime."),
+            satisfied: hasIOSRuntime,
+            required: true,
+            fix: hasIOSRuntime || !hasXcode
+                ? .none
+                : .xcodePlatform(platform: "iOS", label: "Download runtime")
+        ))
+
         let python = Self.python3Path()
         items.append(Dependency(
             id: "python",
@@ -185,6 +248,8 @@ struct SetupService {
             try await bootstrapCommandLineTools(onLog: onLog)
         case .bridgeVenv:
             try await bootstrapBridgeVenv(onLog: onLog)
+        case .xcodePlatform(let platform, _):
+            try await downloadXcodePlatform(platform, onLog: onLog)
         }
     }
 
@@ -194,6 +259,7 @@ struct SetupService {
         case javaMissing
         case bridgeDirMissing
         case pythonMissing
+        case xcodeMissing
         case downloadFailed(String)
         case unpackFailed(Int32)
         case commandFailed(String, Int32)
@@ -205,6 +271,7 @@ struct SetupService {
             case .javaMissing: "No Java runtime. Install Android Studio or Temurin first."
             case .bridgeDirMissing: "Bundled bridge scripts are missing. Reinstall MacPhone."
             case .pythonMissing: "No python3 found. Install it (e.g. brew install python) and retry."
+            case .xcodeMissing: "Full Xcode is not installed. Install Xcode first."
             case .downloadFailed(let m): "Download failed: \(m)"
             case .unpackFailed(let c): "Unpacking the tools failed (ditto exit \(c))."
             case .commandFailed(let tool, let c): "\(tool) failed (exit \(c))."
@@ -259,6 +326,27 @@ struct SetupService {
         )
         guard code == 0 else { throw SetupError.commandFailed("brew", code) }
         onLog("\(formula) installed.")
+    }
+
+    private func downloadXcodePlatform(
+        _ platform: String,
+        onLog: @escaping @Sendable (String) -> Void
+    ) async throws {
+        guard IOSSimulatorProvisioner.fullXcodeInstalled else {
+            throw SetupError.xcodeMissing
+        }
+        onLog("Downloading the latest \(platform) Simulator runtime from Apple…")
+        onLog("This is a large download and can take several minutes.")
+        let code = try await runner.runStreaming(
+            "/usr/bin/xcodebuild",
+            ["-downloadPlatform", platform],
+            timeout: 7_200,
+            onLine: onLog
+        )
+        guard code == 0 else {
+            throw SetupError.commandFailed("xcodebuild -downloadPlatform \(platform)", code)
+        }
+        onLog("\(platform) Simulator runtime installed.")
     }
 
     private func installSdkPackages(_ packages: [String], onLog: @escaping @Sendable (String) -> Void) async throws {

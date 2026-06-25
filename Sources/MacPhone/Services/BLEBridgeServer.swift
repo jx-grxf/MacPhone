@@ -49,10 +49,17 @@ final class BLEBridgeServer {
 
     func start(port: UInt16 = 8765) {
         guard listener == nil else { return }
+        guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
+            lastError = "Invalid bridge port: \(port)."
+            return
+        }
         self.port = port
         do {
             let params = NWParameters.tcp
-            params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
+            params.requiredLocalEndpoint = NWEndpoint.hostPort(
+                host: "127.0.0.1",
+                port: endpointPort
+            )
             let listener = try NWListener(using: params)
             self.listener = listener
 

@@ -49,7 +49,12 @@ struct DeviceControlService {
             guard let sdk = AndroidSDK.locate() else { throw ControlError.androidSDKMissing }
             guard sdk.hasEmulator else { throw ControlError.toolMissing("emulator") }
             if device.isRunning { try await killEmulator(serial: device.identifier) }
-            try await runner.launchDetached(sdk.emulatorPath, ["-avd", avdNameForWipe(device), "-wipe-data", "-no-boot-anim"])
+            let avdName = avdNameForWipe(device)
+            try AndroidAVDPerformance.apply(toAVDNamed: avdName)
+            try await runner.launchDetached(
+                sdk.emulatorPath,
+                ["-avd", avdName, "-wipe-data", "-accel", "auto", "-gpu", "auto", "-no-boot-anim"]
+            )
         }
     }
 
@@ -92,10 +97,11 @@ struct DeviceControlService {
     private func bootEmulator(avdName: String, headless: Bool, coldBoot: Bool) async throws {
         guard let sdk = AndroidSDK.locate() else { throw ControlError.androidSDKMissing }
         guard sdk.hasEmulator else { throw ControlError.toolMissing("emulator") }
-        // -gpu host uses the Mac's real GPU; without it the emulator falls back to
-        // software rendering and the UI crawls.
-        var args = ["-avd", avdName, "-gpu", "host"]
-        if headless { args.append(contentsOf: ["-no-window", "-no-boot-anim"]) }
+        try AndroidAVDPerformance.apply(toAVDNamed: avdName)
+        // Auto prefers Hypervisor.framework/native acceleration and a hardware GPU
+        // backend, but still permits a compatible fallback instead of failing to boot.
+        var args = ["-avd", avdName, "-accel", "auto", "-gpu", "auto", "-no-boot-anim"]
+        if headless { args.append("-no-window") }
         if coldBoot { args.append("-no-snapshot-load") }
         // The emulator process stays alive for the lifetime of the device; launch detached.
         try await runner.launchDetached(sdk.emulatorPath, args)

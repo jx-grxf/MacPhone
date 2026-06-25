@@ -52,7 +52,32 @@ struct AndroidSDK {
             "/Applications/Android Studio.app/Contents/jbr/Contents/Home",
             NSHomeDirectory() + "/Applications/Android Studio.app/Contents/jbr/Contents/Home",
         ]
-        return candidates.first { FileManager.default.fileExists(atPath: $0 + "/bin/java") }
+        if let bundled = candidates.first(where: {
+            FileManager.default.fileExists(atPath: $0 + "/bin/java")
+        }) {
+            return bundled
+        }
+
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/libexec/java_home")
+        process.standardOutput = output
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return nil }
+            let path = String(
+                data: output.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            )?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let path, FileManager.default.fileExists(atPath: path + "/bin/java") else {
+                return nil
+            }
+            return path
+        } catch {
+            return nil
+        }
     }
 
     /// Environment overlay for running the command-line tools: a resolved JAVA_HOME (with

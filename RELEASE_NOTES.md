@@ -2,19 +2,20 @@
 
 ## 0.1.0
 
-First public preview of MacPhone — a native macOS device lab that bridges a real
-Bluetooth LE device into Android emulators and iOS simulators.
+First public preview of MacPhone — a native macOS device lab for Android
+emulators and iOS simulators, including a real Bluetooth LE bridge for Android.
 
 ### Highlights
 
 - **Auto-updates via Sparkle.** MacPhone now checks for updates in the background
   and on launch, with a manual *Check for Updates…* in the app menu and a
   Stable/Beta channel toggle in Settings → Updates.
-- **One-click Pixel + BLE Radar.** Setup has a Quick start that creates a
-  Play-enabled Pixel emulator, boots it, and installs the open-source BLE Radar
-  scanner — ready to connect to the bridged device immediately.
-- **Install BLE Radar on demand.** Any running Android emulator can get BLE Radar
-  installed from its row menu.
+- **Fast Android emulators by default.** New and existing AVDs use
+  automatic hardware CPU/GPU acceleration and sensible CPU/RAM defaults.
+- **One-click iOS simulators.** The iOS screen can download Apple’s current
+  Simulator runtime, create an iPhone with `simctl`, and boot it immediately.
+- **No bundled Android apps.** MacPhone creates clean Android emulators and does
+  not preinstall third-party scanner applications.
 
 ### Compatibility
 

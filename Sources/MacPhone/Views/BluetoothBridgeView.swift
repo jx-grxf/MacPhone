@@ -25,7 +25,6 @@ struct BluetoothBridgeView: View {
     }
 
     private var stopLabel: String {
-        if ble.scooterActive { return "Stop Scooter" }
         if ble.demoActive { return "Stop Demo" }
         return "Disconnect"
     }
@@ -42,7 +41,7 @@ struct BluetoothBridgeView: View {
 
             Spacer()
 
-            if ble.demoActive || ble.scooterActive || ble.connectedPeripheralID != nil {
+            if ble.demoActive || ble.connectedPeripheralID != nil {
                 // One control to fully reset back to scanning, whatever the state.
                 Button(role: .destructive) { ble.leaveCurrentDevice() } label: {
                     Label(stopLabel, systemImage: "xmark.circle")
@@ -52,10 +51,6 @@ struct BluetoothBridgeView: View {
                     Label("Stop", systemImage: "stop.circle")
                 }
             } else {
-                Button { ble.startVirtualScooter() } label: {
-                    Label("Virtual Scooter", systemImage: "scooter")
-                }
-                .help("Publish an emulated Xiaomi M365 scooter (no hardware) so you can mirror it to the emulator and connect from XiaoDash.")
                 Button { ble.startDemo() } label: {
                     Label("Demo Device", systemImage: "wand.and.stars")
                 }
@@ -154,7 +149,7 @@ struct BluetoothBridgeView: View {
                     ble.isScanning ? "Searching…" : "No Peripherals",
                     systemImage: "antenna.radiowaves.left.and.right",
                     description: Text(ble.isBluetoothReady
-                        ? "Press Scan to look for advertising BLE devices like the scooter."
+                        ? "Press Scan to look for advertising BLE devices."
                         : ble.statusMessage)
                 )
                 .frame(maxWidth: .infinity, minHeight: 220)

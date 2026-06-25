@@ -28,6 +28,7 @@ INFO="$APP/Contents/Info.plist"
 [[ ! -e "$APP/Contents/Resources/bridge/.venv" ]]
 
 codesign --verify --deep --strict "$APP"
+./script/verify_binary_sdk.sh "$APP/Contents/MacOS/MacPhone"
 lipo -archs "$APP/Contents/MacOS/MacPhone" | grep -qw arm64
 hdiutil imageinfo "$DMG" >/dev/null
 unzip -tq "$ZIP" >/dev/null

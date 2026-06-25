@@ -50,13 +50,13 @@ connects exactly as it would to the real device. See [`bridge/README.md`](bridge
 
 ## Build
 
-Requires macOS 14+ and a Swift 6 toolchain (Xcode 16).
+Requires macOS 14+ and the current stable Xcode 26 toolchain.
 
 ```bash
 git clone https://github.com/jx-grxf/MacPhone.git
 cd MacPhone
-swift build
-swift run MacPhone
+brew install xcodegen
+./script/build_and_run.sh
 ```
 
 The BLE bridge runs from its own virtualenv:
