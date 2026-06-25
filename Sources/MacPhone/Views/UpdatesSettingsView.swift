@@ -4,6 +4,7 @@ import SwiftUI
 /// toggle, the automatic-check preference, and a manual "Check Now".
 struct UpdatesSettingsView: View {
     @Environment(UpdateService.self) private var updates
+    @AppStorage(AppPreferences.testDevicesEnabled) private var testDevicesEnabled = false
 
     var body: some View {
         @Bindable var updates = updates
@@ -36,13 +37,19 @@ struct UpdatesSettingsView: View {
                     LabeledContent("Last check", value: date.formatted(date: .abbreviated, time: .shortened))
                 }
             }
+            Section("Test Devices") {
+                Toggle("Show test devices in Bluetooth", isOn: $testDevicesEnabled)
+                Text("Adds the virtual Xiaomi M365 scooter button to the Bluetooth screen. Test devices are disabled by default.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section {
                 Button("Check Now") { updates.checkForUpdates() }
             }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
-        .frame(width: 460, height: 420)
+        .frame(width: 460, height: 520)
     }
 
     /// "0.1.0 (1)" from the bundle's marketing version and build number.

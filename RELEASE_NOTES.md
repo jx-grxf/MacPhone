@@ -1,5 +1,21 @@
 # MacPhone release notes
 
+## 0.1.1
+
+### Highlights
+
+- **Optional test devices.** Enable *Test Devices* in Settings to show the
+  virtual Xiaomi M365 scooter on the Bluetooth screen.
+- **M365 protocol testing.** The in-app scooter exposes its Nordic UART GATT
+  service, model advertisement, telemetry registers, and read replies for
+  Android emulator testing with apps such as XiaoDash.
+- **Hidden by default.** Production BLE workflows remain uncluttered until test
+  devices are explicitly enabled.
+- **Much faster Android emulators.** Emulators now render through the host Metal
+  GPU instead of silently falling back to software (SwiftShader), which had been
+  pegging the CPU and making running VMs crawl. Headless boots keep the software
+  path where no host surface exists.
+
 ## 0.1.0
 
 First public preview of MacPhone — a native macOS device lab for Android

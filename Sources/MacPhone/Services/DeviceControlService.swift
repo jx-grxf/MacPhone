@@ -53,7 +53,7 @@ struct DeviceControlService {
             try AndroidAVDPerformance.apply(toAVDNamed: avdName)
             try await runner.launchDetached(
                 sdk.emulatorPath,
-                ["-avd", avdName, "-wipe-data", "-accel", "auto", "-gpu", "auto", "-no-boot-anim"]
+                ["-avd", avdName, "-wipe-data", "-accel", "auto", "-gpu", "host", "-no-boot-anim"]
             )
         }
     }
@@ -98,9 +98,14 @@ struct DeviceControlService {
         guard let sdk = AndroidSDK.locate() else { throw ControlError.androidSDKMissing }
         guard sdk.hasEmulator else { throw ControlError.toolMissing("emulator") }
         try AndroidAVDPerformance.apply(toAVDNamed: avdName)
-        // Auto prefers Hypervisor.framework/native acceleration and a hardware GPU
-        // backend, but still permits a compatible fallback instead of failing to boot.
-        var args = ["-avd", avdName, "-accel", "auto", "-gpu", "auto", "-no-boot-anim"]
+        // `-accel auto` prefers Hypervisor.framework while permitting a fallback.
+        // GPU is pinned explicitly: with a window we force `host` so rendering goes
+        // through the host Metal GPU (ANGLE). `-gpu auto` is unreliable on Apple
+        // silicon — it silently falls back to SwiftShader (software Vulkan), which
+        // pegs the CPU and makes the whole VM crawl. Headless has no host surface,
+        // so it must use the software path explicitly.
+        let gpu = headless ? "swiftshader_indirect" : "host"
+        var args = ["-avd", avdName, "-accel", "auto", "-gpu", gpu, "-no-boot-anim"]
         if headless { args.append("-no-window") }
         if coldBoot { args.append("-no-snapshot-load") }
         // The emulator process stays alive for the lifetime of the device; launch detached.
