@@ -83,15 +83,28 @@ struct VirtualScooter {
         u16(&esc, 0x25, profile.tripMeters)          // trip meters
         u32(&esc, 0x29, profile.totalMeters)         // total meters
         u16(&esc, 0x3E, profile.frameTempCx10)       // frame temperature (0.1 C)
+        // M365 dashboards (XiaoDash etc.) poll the ESC realtime status block with a single
+        // contiguous read starting at register 0xB0 and bind each gauge to a fixed offset
+        // inside it. Speed, odometer, trip and frame temperature MUST sit at their classic
+        // M365-firmware registers (0xB5/0xB7/0xB8/0xB9/0xBB/0xBE) or those gauges read zero.
         u16(&esc, 0xB0, profile.errorAlarm)          // error / alarm bitfield
+        u16(&esc, 0xB1, 0)                           // warning code
         u16(&esc, 0xB4, profile.batteryPercent)      // ESC battery %
-        u16(&esc, 0xB5, profile.speedKmhX1000)       // speed
+        u16(&esc, 0xB5, UInt16(bitPattern: Int16(truncatingIfNeeded: Int(profile.speedKmhX1000) / 10))) // speed (km/h x100, signed)
+        u16(&esc, 0xB7, UInt16(truncatingIfNeeded: profile.totalMeters & 0xFFFF))  // odometer low word
+        u16(&esc, 0xB8, UInt16(truncatingIfNeeded: profile.totalMeters >> 16))     // odometer high word
+        u16(&esc, 0xB9, profile.tripMeters)          // trip distance (m)
+        u16(&esc, 0xBB, profile.frameTempCx10)       // frame temperature (x10 C)
+        u16(&esc, 0xBE, profile.frameTempCx10)       // frame temperature (alt block; exact 0xBE reads are field weakening)
         esc[0x7B * 2] = profile.kers
         esc[0x7C * 2] = profile.cruise
         esc[0x7D * 2] = profile.tailLight
 
         // BMS bank.
         blob(&bms, 0x10, Array(profile.serial.utf8))
+        u16(&bms, 0x18, 7800)                        // design capacity (mAh)
+        u16(&bms, 0x19, 7500)                        // full capacity (mAh)
+        u16(&bms, 0x1B, 12)                          // charge cycles
         u16(&bms, 0x31, profile.remainingMah)
         u16(&bms, 0x32, profile.batteryPercent)
         u16(&bms, 0x33, UInt16(bitPattern: profile.currentCentiAmp))
