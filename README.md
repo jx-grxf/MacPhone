@@ -20,6 +20,11 @@ A native macOS device lab — run and control many Android emulators and iOS sim
 > Mac's own radio and re-publishes its exact GATT tree on the emulator's virtual controller, so the
 > app under test sees the real services, characteristics and advertisement with no dongle.
 
+<!-- DEMO: add a screen recording here — screen recording: real BLE device connecting, then the emulator app seeing the same GATT tree
+     Record with ⌘⇧5, then: jx-grxf/tools/make-demo.sh <recording.mov> .
+<p align="center"><img src=".github/assets/demo.gif" alt="" width="720"></p>
+-->
+
 ## What it does
 
 - **Manages Android emulators.** Discover, provision and launch AVDs; one panel for many devices.
