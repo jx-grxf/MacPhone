@@ -57,6 +57,17 @@ final class BLEBridgeService: NSObject {
         return central?.isScanning ?? false
     }
 
+    var isConnecting: Bool {
+        if case .connecting = connectionState { return true }
+        return false
+    }
+
+    /// Anything a single Stop button should be able to halt — scanning, a stalled connect
+    /// attempt, a live connection, or a virtual demo/scooter device.
+    var isBusy: Bool {
+        isScanning || isConnecting || connectedPeripheralID != nil || demoActive || scooterActive
+    }
+
     var isBluetoothReady: Bool { managerState == .poweredOn }
 
     var statusMessage: String {
@@ -75,6 +86,9 @@ final class BLEBridgeService: NSObject {
 
     private var central: CBCentralManager?
     private var connectedPeripheral: CBPeripheral?
+    /// The peripheral a connect attempt is in flight for. CoreBluetooth connects never time
+    /// out on their own, so we keep this to be able to cancel a stalled attempt.
+    private var connectingPeripheral: CBPeripheral?
     private var reconnectAfterDisconnect: CBPeripheral?
     /// Keep CBPeripheral references alive so connection callbacks fire.
     private var peripheralCache: [UUID: CBPeripheral] = [:]
@@ -160,6 +174,30 @@ final class BLEBridgeService: NSObject {
         // Land back on a live scan rather than an empty list, so the user is never stranded
         // with no way to pick another device (matches the "Disconnect & Scan" affordance).
         if isBluetoothReady { startScan() }
+    }
+
+    /// Hard stop: halt scanning, abort a pending connect, drop the demo/scooter/mirror, and
+    /// disconnect any live peripheral — landing back in idle. Unlike `leaveCurrentDevice`, it
+    /// does NOT auto-restart a scan, so pressing Stop always actually stops.
+    func stop() {
+        if isMirroring { stopEmulatorMirror() }
+        if demoActive { stopDemo() }
+        if scooterActive { stopVirtualScooter() }
+        cancelConnect()
+        reconnectAfterDisconnect = nil
+        if connectedPeripheral != nil { disconnect() }
+        stopScan()
+        connectionState = .idle
+    }
+
+    /// Abort a connect attempt that has not completed. Without this a device that accepts the
+    /// link but never finishes app-layer setup (some encrypted Ninebot models) leaves the UI
+    /// stuck in "Connecting…" with no way out.
+    private func cancelConnect() {
+        guard let central, let peripheral = connectingPeripheral else { return }
+        append(.info, "Cancelling connection attempt…")
+        central.cancelPeripheralConnection(peripheral)
+        connectingPeripheral = nil
     }
 
     /// What is being mirrored, for the UI subtitle.
@@ -458,6 +496,7 @@ final class BLEBridgeService: NSObject {
         }
         stopScan()
         let name = peripheral.name ?? id.uuidString
+        connectingPeripheral = peripheral
         connectionState = .connecting(name)
         append(.info, "Connecting to \(name)…")
         central.connect(peripheral, options: nil)
@@ -647,6 +686,7 @@ extension BLEBridgeService: CBCentralManagerDelegate {
 
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
+            self.connectingPeripheral = nil
             self.connectedPeripheral = peripheral
             self.connectedPeripheralID = peripheral.identifier
             self.connectionState = .connected(peripheral.name ?? peripheral.identifier.uuidString)
@@ -666,6 +706,7 @@ extension BLEBridgeService: CBCentralManagerDelegate {
     ) {
         let message = error?.localizedDescription ?? "unknown error"
         Task { @MainActor in
+            self.connectingPeripheral = nil
             self.connectionState = .disconnected
             self.append(.error, "Failed to connect: \(message)")
         }
@@ -679,6 +720,7 @@ extension BLEBridgeService: CBCentralManagerDelegate {
         let message = error?.localizedDescription
         Task { @MainActor in
             let shouldReconnect = self.reconnectAfterDisconnect?.identifier == peripheral.identifier
+            self.connectingPeripheral = nil
             self.connectedPeripheral = nil
             self.connectedPeripheralID = nil
             self.services.removeAll()

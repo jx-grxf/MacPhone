@@ -33,6 +33,8 @@ struct BluetoothBridgeView: View {
     private var stopLabel: String {
         if ble.scooterActive { return "Stop Scooter" }
         if ble.demoActive { return "Stop Demo" }
+        if ble.isConnecting { return "Cancel" }
+        if ble.isScanning && ble.connectedPeripheralID == nil { return "Stop Scan" }
         return "Disconnect"
     }
 
@@ -48,14 +50,11 @@ struct BluetoothBridgeView: View {
 
             Spacer()
 
-            if ble.demoActive || ble.scooterActive || ble.connectedPeripheralID != nil {
-                // One control to fully reset back to scanning, whatever the state.
-                Button(role: .destructive) { ble.leaveCurrentDevice() } label: {
-                    Label(stopLabel, systemImage: "xmark.circle")
-                }
-            } else if ble.isScanning {
-                Button { ble.stopScan() } label: {
-                    Label("Stop", systemImage: "stop.circle")
+            if ble.isBusy {
+                // One Stop control for every active state — scanning, a stalled connect,
+                // a live connection, or a virtual device — that always halts and stays idle.
+                Button(role: .destructive) { ble.stop() } label: {
+                    Label(stopLabel, systemImage: "stop.circle")
                 }
             } else {
                 if testDevicesEnabled {
