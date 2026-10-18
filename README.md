@@ -95,7 +95,7 @@ Tests:
 xcodebuild -project MacPhone.xcodeproj -scheme MacPhone -destination 'platform=macOS' test
 ```
 
-Toolchain and release rules are in [AGENTS.md](AGENTS.md). The bridge can be run and tested on its own, see [bridge/README.md](bridge/README.md).
+Builds must use the current stable Xcode; `script/verify_apple_toolchain.sh` and `script/verify_binary_sdk.sh` check that. The bridge can be run and tested on its own, see [bridge/README.md](bridge/README.md).
 
 ## Similar tools
 

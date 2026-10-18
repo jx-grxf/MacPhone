@@ -47,4 +47,4 @@ The bridge mirrors GATT, not the link layer. macOS does not let apps hand the in
 
 ## Updates and releases
 
-Sparkle 2.10 with an EdDSA-signed appcast. Stable clients read `releases/latest/download/appcast.xml`, beta clients the moving `beta` release. The release workflow, toolchain gates and verification scripts are described in `AGENTS.md` and `script/`.
+Sparkle 2.10 with an EdDSA-signed appcast. Stable clients read `releases/latest/download/appcast.xml`, beta clients the moving `beta` release. The release workflow, toolchain gates and verification scripts live in `.github/workflows/release.yml` and `script/`.
