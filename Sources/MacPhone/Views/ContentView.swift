@@ -16,6 +16,11 @@ struct ContentView: View {
             detail
                 .navigationTitle(section.title)
         }
+        .onChange(of: selection) {
+            // Installs happen in sheets and in Terminal too; keep the Setup badge current.
+            Task { await setup.check() }
+        }
+        .onChange(of: store.androidJob.finished) { Task { await setup.check() } }
         .task {
             ble.start()
             async let devices: Void = store.refresh()

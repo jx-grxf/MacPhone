@@ -111,6 +111,15 @@ struct AndroidParsingTests {
         #expect(devices[2].state == "offline")
     }
 
+    @Test func launchedAVDsFromProcessList() {
+        let ps = """
+        /opt/homebrew/share/android-commandlinetools/emulator/qemu/darwin-aarch64/qemu-system-aarch64 -avd Pixel_9 -accel auto -gpu host
+        /opt/homebrew/share/android-commandlinetools/emulator/netsimd --host-dns=192.168.1.1
+        /usr/bin/vim notes -avd ignored
+        """
+        #expect(AndroidService.parseLaunchedAVDs(ps) == ["Pixel_9"])
+    }
+
     @Test func avdListSkipsEmulatorNoise() {
         let output = "INFO    | Storing crashdata in: /tmp\nPixel_9\nMy_Tablet\n"
         #expect(AndroidService.parseAVDList(output) == ["Pixel_9", "My_Tablet"])

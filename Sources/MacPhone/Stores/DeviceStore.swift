@@ -44,6 +44,7 @@ final class DeviceStore {
     private(set) var isRefreshing = false
     private(set) var hasLoaded = false
     private var refreshRequested = false
+    private var refreshTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
 
     private(set) var busyDeviceIDs: Set<String> = []
@@ -76,13 +77,23 @@ final class DeviceStore {
 
     // MARK: Refresh
 
-    /// A refresh requested while one runs is queued, not dropped, so a state change that
-    /// lands mid-refresh still shows up.
+    /// A refresh requested while one runs is queued, not dropped, and the caller still waits
+    /// for fresh data: code that refreshes and then looks up a device it just created must
+    /// not read the old list.
     func refresh() async {
-        if isRefreshing {
+        if let running = refreshTask {
             refreshRequested = true
+            await running.value
             return
         }
+        let task = Task { await runRefreshLoop() }
+        refreshTask = task
+        await task.value
+        refreshTask = nil
+        pollWhileTransitioning()
+    }
+
+    private func runRefreshLoop() async {
         isRefreshing = true
         defer { isRefreshing = false }
         repeat {
@@ -97,7 +108,6 @@ final class DeviceStore {
             issues = results.flatMap(\.issues)
         } while refreshRequested
         hasLoaded = true
-        pollWhileTransitioning()
     }
 
     /// Emulators take 30–60 s to come online; keep the list honest while they do.

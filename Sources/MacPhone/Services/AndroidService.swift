@@ -70,18 +70,26 @@ struct AndroidService: Sendable {
             }
         }
 
-        let avds = avdNames.map { name -> MobileDevice in
+        // An emulator shows up in adb only some seconds after launch, and is "device" long
+        // before Android has finished booting. Count both phases as starting.
+        let launched = await launchedAVDs()
+        var avds: [MobileDevice] = []
+        for name in avdNames {
             let live = runningAVD[name]
-            return MobileDevice(
+            var state: DeviceState = launched.contains(name) ? .booting : .shutdown
+            if let live, live.state == "device" {
+                state = await bootCompleted(adb: sdk.adbPath, serial: live.serial) ? .booted : .booting
+            }
+            avds.append(MobileDevice(
                 id: "avd-\(name)",
                 name: name.replacingOccurrences(of: "_", with: " "),
                 kind: .avd,
                 family: .android,
                 osVersion: Self.androidVersion(ofAVD: name),
-                state: live.map { $0.state == "device" ? .booted : .booting } ?? .shutdown,
+                state: state,
                 identifier: name,
                 serial: live?.serial
-            )
+            ))
         }
         let others = foreign.map { device in
             MobileDevice(
@@ -129,6 +137,28 @@ struct AndroidService: Sendable {
               let api = Int(line[range].dropFirst(8))
         else { return "Android" }
         return AndroidAPI.versionName(api).map { "Android \($0) · API \(api)" } ?? "Android API \(api)"
+    }
+
+    /// AVD names of running emulator processes, from their `-avd <name>` argument.
+    private func launchedAVDs() async -> Set<String> {
+        guard let result = try? await runner.run("/bin/ps", ["-axo", "command"], timeout: 5) else { return [] }
+        return Self.parseLaunchedAVDs(result.standardOutput)
+    }
+
+    static func parseLaunchedAVDs(_ psOutput: String) -> Set<String> {
+        var names = Set<String>()
+        for line in psOutput.split(whereSeparator: \.isNewline) where line.contains("qemu-system") || line.contains("/emulator ") {
+            let parts = line.split(separator: " ")
+            if let index = parts.firstIndex(of: "-avd"), index + 1 < parts.count {
+                names.insert(String(parts[index + 1]))
+            }
+        }
+        return names
+    }
+
+    private func bootCompleted(adb: String, serial: String) async -> Bool {
+        let result = try? await runner.run(adb, ["-s", serial, "shell", "getprop", "sys.boot_completed"], timeout: 5)
+        return result?.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
     }
 
     private func avdName(adb: String, serial: String) async -> String? {
