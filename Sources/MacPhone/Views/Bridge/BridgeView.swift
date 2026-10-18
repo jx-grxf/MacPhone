@@ -112,10 +112,13 @@ private struct MirrorPath: View {
             Divider()
 
             HStack(spacing: Design.Space.m) {
+                // No vertical fixedSize here: in an HStack it lets the text report a huge
+                // ideal height, which pushes the whole window content under the title bar.
                 Text(message)
                     .font(.callout)
                     .foregroundStyle(problem == nil ? Color.secondary : Color.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
                 Spacer(minLength: Design.Space.m)
                 if !setup.bridgeReady, !setup.dependencies.isEmpty {

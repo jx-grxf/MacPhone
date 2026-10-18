@@ -81,7 +81,7 @@ struct DeviceListView: View {
             ContentUnavailableView {
                 Label("No Android Emulators", systemImage: "smartphone")
             } description: {
-                Text(store.issues.first?.message ?? "Create one with a current Android image. MacPhone downloads it for you.")
+                Text("Create one with a current Android image. MacPhone downloads the image and, if needed, the emulator itself.")
             } actions: {
                 Button("Create Emulator…") { showCreate = true }
             }

@@ -47,10 +47,14 @@ struct RunningView: View {
                         }
                     }
 
-                    let problems = setup.missingRequired.map(\.title).map { "\($0) is missing." } + store.issues.map(\.message)
+                    // Setup already names missing tools; discovery issues only add something
+                    // once everything is installed.
+                    let problems = setup.missingRequired.isEmpty
+                        ? store.issues.map(\.message)
+                        : setup.missingRequired.map { "\($0.title) is not installed." }
                     if !problems.isEmpty {
                         Section("Needs Attention") {
-                            ForEach(Array(Set(problems)).sorted(), id: \.self) { problem in
+                            ForEach(problems, id: \.self) { problem in
                                 Label(problem, systemImage: "exclamationmark.triangle")
                                     .symbolRenderingMode(.multicolor)
                             }
