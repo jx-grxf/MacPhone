@@ -3,45 +3,50 @@ import SwiftUI
 @main
 struct MacPhoneApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var store = DeviceStore()
-    @State private var ble = BLEBridgeService()
-    @State private var updates = UpdateService()
 
     var body: some Scene {
-        WindowGroup("MacPhone", id: "main") {
-            ContentView(store: store, ble: ble)
-                .frame(minWidth: 980, minHeight: 640)
-                .environment(updates)
-                .task {
-                    await store.refresh()
-                }
+        Window("MacPhone", id: "main") {
+            ContentView(store: appDelegate.store, setup: appDelegate.setup, ble: appDelegate.ble)
+                .frame(minWidth: 900, minHeight: 600)
+                .environment(appDelegate.updates)
         }
+        .defaultSize(width: 1100, height: 720)
         .commands {
-            CommandGroup(after: .newItem) {
-                Button("Refresh Devices") {
-                    Task {
-                        await store.refresh()
-                    }
-                }
-                .keyboardShortcut("r", modifiers: [.command])
-            }
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") {
-                    updates.checkForUpdates()
-                }
+                Button("Check for Updates…") { appDelegate.updates.checkForUpdates() }
+            }
+            CommandGroup(after: .newItem) {
+                Button("Refresh Devices") { Task { await appDelegate.store.refresh() } }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
             }
         }
 
         Settings {
-            UpdatesSettingsView()
-                .environment(updates)
+            SettingsView()
+                .environment(appDelegate.updates)
         }
     }
 }
 
+/// Owns the long-lived services. `App` values can be re-created by SwiftUI, and a second
+/// Sparkle controller or CoreBluetooth central must never exist.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let store = DeviceStore()
+    let setup = SetupStore()
+    let ble = BLEBridgeService()
+    let updates = UpdateService()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        // A child that exits while we write its stdin must not kill MacPhone.
+        signal(SIGPIPE, SIG_IGN)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if ble.isMirroring { ble.stopMirror() }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
     }
 }

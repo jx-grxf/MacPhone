@@ -1,299 +1,344 @@
 import Foundation
 import Observation
+import AppKit
+
+/// Lines of a long-running job, capped so a chatty `sdkmanager` cannot grow it forever.
+struct LiveLog: Equatable {
+    private(set) var lines: [String] = []
+
+    mutating func append(_ line: String) {
+        lines.append(line)
+        if lines.count > 800 { lines.removeFirst(lines.count - 800) }
+    }
+
+    mutating func reset(_ first: String? = nil) {
+        lines = first.map { [$0] } ?? []
+    }
+
+    var text: String { lines.joined(separator: "\n") }
+}
+
+/// A job shown in a sheet: running, finished, or failed, with its log.
+struct JobState: Equatable {
+    var isRunning = false
+    var finished = false
+    var error: String?
+    var log = LiveLog()
+
+    mutating func begin(_ first: String) {
+        var log = LiveLog()
+        log.append(first)
+        self = JobState(isRunning: true, log: log)
+    }
+}
 
 @Observable
 @MainActor
 final class DeviceStore {
-    private let android = AndroidOrchestrator()
-    private let ios = IOSSimulatorOrchestrator()
-    private let iosProvisioner = IOSSimulatorProvisioner()
-    private let control = DeviceControlService()
+    private let simulators = SimulatorService()
+    private let android = AndroidService()
     private let provisioner = AndroidProvisioner()
-    private let setup = SetupService()
 
-    /// Live state for the "Add Android emulator" flow.
-    var isProvisioning = false
-    var provisionLog: [String] = []
-    var provisionError: String?
-    var provisionFinished = false
+    private(set) var devices: [MobileDevice] = []
+    private(set) var issues: [DiscoveryIssue] = []
+    private(set) var isRefreshing = false
+    private(set) var hasLoaded = false
+    private var refreshRequested = false
+    private var pollTask: Task<Void, Never>?
 
-    /// Live state for iOS runtime download and simulator creation.
-    var iosCatalog = IOSSimulatorProvisioner.Catalog.empty
-    var isLoadingIOSCatalog = false
-    var isProvisioningIOS = false
-    var isIOSRuntimeDownloadActive = false
-    var iosProvisionLog: [String] = []
-    var iosProvisionError: String?
-    var iosProvisionFinished = false
+    private(set) var busyDeviceIDs: Set<String> = []
+    /// The last action's outcome, shown as a banner until dismissed.
+    var notice: Notice?
 
-    /// Setup / dependency state.
-    var dependencies: [Dependency] = []
-    var isRunningSetup = false
-    var setupLog: [String] = []
-    var setupError: String?
-    var runningFixID: String?
+    var androidJob = JobState()
+    var simulatorJob = JobState()
+    private(set) var simulatorCatalog = SimulatorService.Catalog.empty
+    private(set) var isLoadingCatalog = false
+    private(set) var isRuntimeDownloadRunning = false
 
-    var allRequiredSatisfied: Bool {
-        dependencies.filter(\.required).allSatisfy(\.satisfied)
+    var bootWithoutWindow: Bool {
+        get { UserDefaults.standard.bool(forKey: "android.bootWithoutWindow") }
+        set { UserDefaults.standard.set(newValue, forKey: "android.bootWithoutWindow") }
     }
 
-    var devices: [MobileDevice] = []
-    var issues: [DiscoveryIssue] = []
-    var isRefreshing = false
-
-    /// Device ids currently undergoing a boot/stop action.
-    var busyDeviceIDs: Set<String> = []
-    /// Last control-action error, surfaced in the UI.
-    var lastActionError: String?
-    /// Whether new Android emulators should boot without a window.
-    var bootHeadless = false
-
-    var androidDevices: [MobileDevice] {
-        devices.filter { $0.platform == .android }
+    struct Notice: Identifiable, Equatable {
+        let id = UUID()
+        let isError: Bool
+        let message: String
+        var revealURL: URL?
     }
 
-    var iosDevices: [MobileDevice] {
-        devices.filter { $0.platform == .ios }
-    }
+    var androidDevices: [MobileDevice] { devices.filter { $0.platform == .android } }
+    var simulatorDevices: [MobileDevice] { devices.filter { $0.platform == .apple } }
+    var runningDevices: [MobileDevice] { devices.filter { $0.isRunning || $0.isTransitioning } }
 
-    @MainActor
+    func isBusy(_ device: MobileDevice) -> Bool { busyDeviceIDs.contains(device.id) }
+
+    // MARK: Refresh
+
+    /// A refresh requested while one runs is queued, not dropped, so a state change that
+    /// lands mid-refresh still shows up.
     func refresh() async {
-        guard !isRefreshing else { return }
+        if isRefreshing {
+            refreshRequested = true
+            return
+        }
         isRefreshing = true
         defer { isRefreshing = false }
-
-        async let androidResult = android.discover()
-        async let iosResult = ios.discover()
-
-        let results = await [androidResult, iosResult]
-        devices = results.flatMap(\.devices).sorted {
-            if $0.platform.rawValue == $1.platform.rawValue {
-                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        repeat {
+            refreshRequested = false
+            async let apple = simulators.discover()
+            async let droid = android.discover()
+            let results = await [apple, droid]
+            devices = results.flatMap(\.devices).sorted {
+                if $0.isRunning != $1.isRunning { return $0.isRunning }
+                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
             }
-            return $0.platform.rawValue < $1.platform.rawValue
+            issues = results.flatMap(\.issues)
+        } while refreshRequested
+        hasLoaded = true
+        pollWhileTransitioning()
+    }
+
+    /// Emulators take 30–60 s to come online; keep the list honest while they do.
+    private func pollWhileTransitioning() {
+        pollTask?.cancel()
+        guard devices.contains(where: \.isTransitioning) || !busyDeviceIDs.isEmpty else { return }
+        pollTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            await self?.refresh()
         }
-        issues = results.flatMap(\.issues)
     }
 
-    func isBusy(_ device: MobileDevice) -> Bool {
-        busyDeviceIDs.contains(device.id)
+    // MARK: Lifecycle actions
+
+    func boot(_ device: MobileDevice, coldBoot: Bool = false) async {
+        await perform(device, success: nil) {
+            switch device.kind {
+            case .simulator:
+                try await self.simulators.boot(device.identifier)
+            case .avd:
+                try await self.android.boot(avd: device.identifier, options: .init(withoutWindow: self.bootWithoutWindow, coldBoot: coldBoot))
+            case .adbOnly:
+                break
+            }
+        }
     }
 
-    @MainActor
-    func boot(_ device: MobileDevice) async {
-        await perform(device) { try await control.boot(device, headless: bootHeadless) }
-    }
-
-    @MainActor
-    func coldBoot(_ device: MobileDevice) async {
-        await perform(device) { try await control.boot(device, headless: bootHeadless, coldBoot: true) }
-    }
-
-    @MainActor
     func stop(_ device: MobileDevice) async {
-        await perform(device) { try await control.stop(device) }
-    }
-
-    @MainActor
-    func wipe(_ device: MobileDevice) async {
-        await perform(device) { try await control.wipe(device) }
-    }
-
-    // MARK: Setup / dependencies
-
-    @MainActor
-    func refreshDependencies() {
-        dependencies = setup.check()
-    }
-
-    @MainActor
-    func runFix(for dependency: Dependency) async {
-        guard !isRunningSetup else { return }
-        isRunningSetup = true
-        runningFixID = dependency.id
-        setupError = nil
-        setupLog = ["Starting: \(dependency.fix.label ?? dependency.title)…"]
-        defer {
-            isRunningSetup = false
-            runningFixID = nil
+        await perform(device, success: nil) {
+            switch device.kind {
+            case .simulator: try await self.simulators.shutdown(device.identifier)
+            case .avd, .adbOnly:
+                guard let serial = device.serial else { return }
+                try await self.android.stop(serial: serial)
+            }
         }
+    }
 
-        let onLog: @Sendable (String) -> Void = { line in
-            Task { @MainActor in self.appendSetupLog(line) }
+    func erase(_ device: MobileDevice) async {
+        await perform(device, success: "\(device.name) was reset.") {
+            switch device.kind {
+            case .simulator:
+                try await self.simulators.erase(device.identifier, isRunning: device.isRunning)
+            case .avd:
+                try await self.android.wipe(avd: device.identifier, runningSerial: device.serial,
+                                            options: .init(withoutWindow: self.bootWithoutWindow))
+            case .adbOnly:
+                break
+            }
         }
+    }
 
+    func delete(_ device: MobileDevice) async {
+        await perform(device, success: "\(device.name) was deleted.") {
+            switch device.kind {
+            case .simulator: try await self.simulators.delete(device.identifier, isRunning: device.isRunning)
+            case .avd: try await self.android.delete(avd: device.identifier, runningSerial: device.serial)
+            case .adbOnly: break
+            }
+        }
+    }
+
+    func rename(_ device: MobileDevice, to name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard device.kind == .simulator, !trimmed.isEmpty else { return }
+        await perform(device, success: nil) { try await self.simulators.rename(device.identifier, to: trimmed) }
+    }
+
+    func duplicate(_ device: MobileDevice) async {
+        guard device.kind == .simulator else { return }
+        await perform(device, success: "Duplicated \(device.name).") {
+            try await self.simulators.clone(device.identifier, as: "\(device.name) Copy")
+        }
+    }
+
+    func deleteUnavailableSimulators() async {
         do {
-            try await setup.run(dependency.fix, onLog: onLog)
+            try await simulators.deleteUnavailable()
+            notice = Notice(isError: false, message: "Removed simulators whose runtime is gone.")
         } catch {
-            setupError = error.localizedDescription
-            appendSetupLog("Error: \(error.localizedDescription)")
+            notice = Notice(isError: true, message: error.localizedDescription)
         }
-
-        refreshDependencies()
         await refresh()
     }
 
-    @MainActor
-    private func appendSetupLog(_ line: String) {
-        setupLog.append(line)
-        if setupLog.count > 800 { setupLog.removeFirst(setupLog.count - 800) }
+    // MARK: Testing helpers
+
+    func show(_ device: MobileDevice) async {
+        guard device.kind == .simulator else { return }
+        try? await simulators.show(device.identifier)
     }
 
-    // MARK: Provisioning
-
-    @MainActor
-    func createAndroidEmulator(_ request: AndroidProvisioner.Request, bootAfterCreate: Bool = false) async {
-        guard !isProvisioning else { return }
-        isProvisioning = true
-        provisionFinished = false
-        provisionError = nil
-        provisionLog = ["Starting…"]
-        defer { isProvisioning = false }
-
-        // The provisioner streams from a background task; hop each line back to the UI.
-        let onLog: @Sendable (String) -> Void = { line in
-            Task { @MainActor in self.appendProvisionLog(line) }
+    func install(_ file: URL, on device: MobileDevice) async {
+        let isApp = file.pathExtension == "app" || file.pathExtension == "ipa"
+        let isAPK = file.pathExtension == "apk"
+        guard (device.platform == .apple && isApp) || (device.platform == .android && isAPK) else {
+            notice = Notice(isError: true, message: device.platform == .apple
+                ? "Simulators install .app bundles built for the simulator."
+                : "Android emulators install .apk files.")
+            return
         }
+        await perform(device, success: "Installed \(file.lastPathComponent) on \(device.name).", refreshAfter: false) {
+            if device.platform == .apple {
+                try await self.simulators.install(file, on: device.identifier)
+            } else {
+                try await self.android.install(file, serial: try self.serial(of: device))
+            }
+        }
+    }
 
+    func open(_ url: String, on device: MobileDevice) async {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        await perform(device, success: nil, refreshAfter: false) {
+            if device.platform == .apple {
+                try await self.simulators.open(trimmed, on: device.identifier)
+            } else {
+                try await self.android.open(trimmed, serial: try self.serial(of: device))
+            }
+        }
+    }
+
+    func screenshot(_ device: MobileDevice) async {
+        let stamp = Date.now.formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false))
+            .replacingOccurrences(of: ":", with: ".")
+        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)[0]
+        let file = desktop.appendingPathComponent("\(device.name) \(stamp).png")
+        await perform(device, success: "Saved the screenshot to the Desktop.", refreshAfter: false) {
+            if device.platform == .apple {
+                try await self.simulators.screenshot(device.identifier, to: file)
+            } else {
+                try await self.android.screenshot(serial: try self.serial(of: device), to: file)
+            }
+        }
+        if notice?.isError == false { notice?.revealURL = file }
+    }
+
+    func setAppearance(dark: Bool, on device: MobileDevice) async {
+        await perform(device, success: nil, refreshAfter: false) {
+            if device.platform == .apple {
+                try await self.simulators.setAppearance(dark: dark, on: device.identifier)
+            } else {
+                try await self.android.setAppearance(dark: dark, serial: try self.serial(of: device))
+            }
+        }
+    }
+
+    func setCleanStatusBar(_ enabled: Bool, on device: MobileDevice) async {
+        guard device.kind == .simulator else { return }
+        await perform(device, success: nil, refreshAfter: false) {
+            try await self.simulators.setCleanStatusBar(enabled, on: device.identifier)
+        }
+    }
+
+    private nonisolated func serial(of device: MobileDevice) throws -> String {
+        guard let serial = device.serial, device.isRunning else { throw AndroidService.AndroidError.notRunning }
+        return serial
+    }
+
+    private func perform(
+        _ device: MobileDevice,
+        success: String?,
+        refreshAfter: Bool = true,
+        _ action: @escaping () async throws -> Void
+    ) async {
+        guard !busyDeviceIDs.contains(device.id) else { return }
+        busyDeviceIDs.insert(device.id)
+        defer { busyDeviceIDs.remove(device.id) }
         do {
-            try await provisioner.provision(request, onLog: onLog)
-            provisionFinished = true
+            try await action()
+            if let success { notice = Notice(isError: false, message: success) }
         } catch {
-            provisionError = error.localizedDescription
-            appendProvisionLog("Error: \(error.localizedDescription)")
+            notice = Notice(isError: true, message: error.localizedDescription)
         }
+        if refreshAfter { await refresh() }
+    }
 
+    // MARK: Creating devices
+
+    func createAndroidEmulator(_ request: AndroidProvisioner.Request, bootAfterCreate: Bool) async {
+        guard !androidJob.isRunning else { return }
+        androidJob.begin("Starting.")
+        let onLine: @Sendable (String) -> Void = { line in Task { @MainActor in self.androidJob.log.append(line) } }
+        do {
+            try await provisioner.provision(request, onLog: onLine)
+            androidJob.finished = true
+        } catch {
+            androidJob.error = error.localizedDescription
+        }
+        androidJob.isRunning = false
         await refresh()
-
-        // Optionally boot the freshly created AVD so the user doesn't have to hunt for it.
-        if bootAfterCreate, provisionFinished,
-           let device = androidDevices.first(where: { $0.name == request.sanitizedName }) {
-            appendProvisionLog("Booting \(device.name)…")
+        if bootAfterCreate, androidJob.finished,
+           let device = androidDevices.first(where: { $0.identifier == request.sanitizedName }) {
             await boot(device)
         }
     }
 
-    @MainActor
-    private func appendProvisionLog(_ line: String) {
-        provisionLog.append(line)
-        if provisionLog.count > 800 { provisionLog.removeFirst(provisionLog.count - 800) }
-    }
-
-    // MARK: iOS Simulator provisioning
-
-    @MainActor
-    func loadIOSCatalog() async {
-        guard !isLoadingIOSCatalog else { return }
-        isLoadingIOSCatalog = true
-        isIOSRuntimeDownloadActive = IOSSimulatorProvisioner.runtimeDownloadInProgress
-        defer { isLoadingIOSCatalog = false }
+    func loadSimulatorCatalog() async {
+        isLoadingCatalog = true
+        defer { isLoadingCatalog = false }
+        isRuntimeDownloadRunning = await SimulatorService.runtimeDownloadInProgress()
         do {
-            iosCatalog = try await iosProvisioner.catalog()
-            iosProvisionError = nil
+            simulatorCatalog = try await simulators.catalog()
         } catch {
-            iosCatalog = .empty
-            iosProvisionError = error.localizedDescription
+            simulatorCatalog = .empty
+            simulatorJob.error = error.localizedDescription
         }
     }
 
-    @MainActor
-    func monitorIOSRuntimeDownload() async {
-        while IOSSimulatorProvisioner.runtimeDownloadInProgress {
-            isIOSRuntimeDownloadActive = true
-            try? await Task.sleep(for: .seconds(5))
-            guard !Task.isCancelled else { return }
-        }
-        guard isIOSRuntimeDownloadActive else { return }
-        isIOSRuntimeDownloadActive = false
-        await loadIOSCatalog()
-        refreshDependencies()
-        await refresh()
-    }
-
-    @MainActor
-    func downloadIOSRuntime() async {
-        guard !isProvisioningIOS else { return }
-        if IOSSimulatorProvisioner.runtimeDownloadInProgress {
-            isIOSRuntimeDownloadActive = true
-            iosProvisionError = nil
-            iosProvisionLog = ["An iOS runtime download is already running in Xcode."]
-            return
-        }
-        isProvisioningIOS = true
-        isIOSRuntimeDownloadActive = true
-        iosProvisionFinished = false
-        iosProvisionError = nil
-        iosProvisionLog = []
-        defer {
-            isProvisioningIOS = false
-            isIOSRuntimeDownloadActive = IOSSimulatorProvisioner.runtimeDownloadInProgress
-        }
-        let onLog: @Sendable (String) -> Void = { line in
-            Task { @MainActor in self.appendIOSProvisionLog(line) }
-        }
+    func createSimulator(_ request: SimulatorService.CreateRequest, bootAfterCreate: Bool) async {
+        guard !simulatorJob.isRunning else { return }
+        simulatorJob.begin("Creating \(request.name).")
         do {
-            try await iosProvisioner.downloadLatestRuntime(onLog: onLog)
-            await loadIOSCatalog()
-            refreshDependencies()
-        } catch {
-            iosProvisionError = error.localizedDescription
-            appendIOSProvisionLog("Error: \(error.localizedDescription)")
-        }
-    }
-
-    @MainActor
-    func createIOSSimulator(
-        _ request: IOSSimulatorProvisioner.Request,
-        bootAfterCreate: Bool
-    ) async {
-        guard !isProvisioningIOS else { return }
-        isProvisioningIOS = true
-        iosProvisionFinished = false
-        iosProvisionError = nil
-        iosProvisionLog = ["Starting…"]
-        defer { isProvisioningIOS = false }
-        let onLog: @Sendable (String) -> Void = { line in
-            Task { @MainActor in self.appendIOSProvisionLog(line) }
-        }
-        do {
-            let udid = try await iosProvisioner.create(request, onLog: onLog)
-            iosProvisionFinished = true
+            let udid = try await simulators.create(request)
+            simulatorJob.log.append("Created \(request.name).")
+            simulatorJob.finished = true
+            simulatorJob.isRunning = false
             await refresh()
-            if bootAfterCreate,
-               let simulator = iosDevices.first(where: { $0.identifier == udid }) {
-                appendIOSProvisionLog("Booting \(simulator.name)…")
-                await boot(simulator)
+            if bootAfterCreate, let device = simulatorDevices.first(where: { $0.identifier == udid }) {
+                await boot(device)
             }
         } catch {
-            iosProvisionError = error.localizedDescription
-            appendIOSProvisionLog("Error: \(error.localizedDescription)")
+            simulatorJob.error = error.localizedDescription
+            simulatorJob.isRunning = false
         }
     }
 
-    @MainActor
-    private func appendIOSProvisionLog(_ line: String) {
-        iosProvisionLog.append(line)
-        if iosProvisionLog.count > 800 {
-            iosProvisionLog.removeFirst(iosProvisionLog.count - 800)
-        }
-    }
-
-    @MainActor
-    private func perform(_ device: MobileDevice, _ action: () async throws -> Void) async {
-        guard !busyDeviceIDs.contains(device.id) else { return }
-        busyDeviceIDs.insert(device.id)
-        lastActionError = nil
-        defer { busyDeviceIDs.remove(device.id) }
-
+    func downloadSimulatorRuntime(_ platform: String) async {
+        guard !simulatorJob.isRunning else { return }
+        simulatorJob.begin("Downloading the \(platform) runtime from Apple. This takes a while.")
+        isRuntimeDownloadRunning = true
+        let onLine: @Sendable (String) -> Void = { line in Task { @MainActor in self.simulatorJob.log.append(line) } }
         do {
-            try await action()
+            try await simulators.downloadRuntime(platform: platform, onLine: onLine)
+            simulatorJob.log.append("\(platform) runtime installed.")
         } catch {
-            lastActionError = error.localizedDescription
-            return
+            simulatorJob.error = error.localizedDescription
         }
-
-        // Emulators/simulators change state asynchronously; give them a moment, then refresh.
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        await refresh()
+        simulatorJob.isRunning = false
+        isRuntimeDownloadRunning = false
+        await loadSimulatorCatalog()
     }
 }

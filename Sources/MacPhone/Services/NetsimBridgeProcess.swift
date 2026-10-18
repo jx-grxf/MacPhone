@@ -1,27 +1,29 @@
 import Foundation
 import Observation
 
-/// Launches and supervises the Python netsim bridge (`macphone_netsim_bridge.py`) from
-/// inside the app, so the user never has to open a terminal. The bridge connects to this
-/// app's BLEBridgeServer (127.0.0.1:8765) and advertises the mirror on the emulator's
-/// netsim controller.
+/// Runs `macphone_netsim_bridge.py`, which connects to `BLEBridgeServer` and advertises the
+/// mirror on the emulator's netsim controller.
 @Observable
 @MainActor
 final class NetsimBridgeProcess {
     private(set) var isRunning = false
-    private(set) var statusLine = "Bridge not started."
+    private(set) var statusLine = "Off"
     private(set) var log: [String] = []
     private(set) var lastError: String?
 
     private var process: Process?
     private var readHandle: FileHandle?
     private var intentionalStop = false
+    private var lastPort: UInt16 = 8765
+    private var lastToken = ""
+    /// The bridge exits with this code when the Mac switched to a device with a different
+    /// GATT. Bumble cannot swap services while advertising, so it gets a fresh start.
+    private static let exitGATTChanged: Int32 = 75
     /// Bytes after the last newline of the previous chunk; pipe reads split lines arbitrarily.
     private var pendingOutput = Data()
 
-    /// Where the bridge scripts live. Release builds carry them in the app bundle;
-    /// development builds can still use an override or the repository checkout.
-    /// `nonisolated` so setup checks (off the main actor) can resolve it too.
+    /// Release builds carry the script in Contents/Resources; a development build run from
+    /// the repository finds `bridge/` next to it.
     nonisolated static func bridgeDirectory() -> URL? {
         let fm = FileManager.default
         func hasScript(_ dir: URL) -> Bool {
@@ -35,7 +37,7 @@ final class NetsimBridgeProcess {
 
         var candidates: [URL] = []
         if let resources = Bundle.main.resourceURL {
-            candidates.append(resources.appendingPathComponent("bridge", isDirectory: true))
+            candidates.append(resources)
         }
         let cwd = URL(fileURLWithPath: fm.currentDirectoryPath)
         candidates.append(cwd.appendingPathComponent("bridge"))
@@ -61,23 +63,21 @@ final class NetsimBridgeProcess {
             .appendingPathComponent("bridge-runtime", isDirectory: true)
     }
 
-    nonisolated static func bridgePython(for scriptsDirectory: URL) -> URL {
-        let developmentPython = scriptsDirectory.appendingPathComponent(".venv/bin/python")
-        if FileManager.default.isExecutableFile(atPath: developmentPython.path) {
-            return developmentPython
-        }
-        return bridgeRuntimeDirectory.appendingPathComponent(".venv/bin/python")
+    nonisolated static var bridgePython: URL {
+        bridgeRuntimeDirectory.appendingPathComponent(".venv/bin/python")
     }
 
-    func start(port: UInt16 = 8765) {
+    func start(port: UInt16, token: String) {
         guard process == nil else { return }
+        lastPort = port
+        lastToken = token
         guard let dir = Self.bridgeDirectory() else {
-            fail("Could not find the bridge/ folder. Set MACPHONE_BRIDGE_DIR.")
+            fail("The bridge script is missing from the app. Reinstall MacPhone.")
             return
         }
-        let python = Self.bridgePython(for: dir)
+        let python = Self.bridgePython
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
-            fail("BLE bridge runtime missing. Open Setup and choose “Set up bridge runtime”.")
+            fail("The bridge runtime is not installed. Open Setup and install it.")
             return
         }
 
@@ -88,6 +88,7 @@ final class NetsimBridgeProcess {
         var env = ProcessInfo.processInfo.environment
         env["MACPHONE_BRIDGE_PORT"] = String(port)
         env["MACPHONE_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
+        env["MACPHONE_BRIDGE_TOKEN"] = token
         proc.environment = env
 
         let pipe = Pipe()
@@ -123,8 +124,8 @@ final class NetsimBridgeProcess {
         lastError = nil
         pendingOutput = Data()
         log = []
-        statusLine = "Starting bridge…"
-        append("Launching macphone_netsim_bridge.py on port \(port)…")
+        statusLine = "Starting the bridge"
+        append("Starting the netsim bridge.")
     }
 
     func stop() {
@@ -134,7 +135,7 @@ final class NetsimBridgeProcess {
         process?.terminate()
         process = nil
         isRunning = false
-        statusLine = "Bridge stopped."
+        statusLine = "Stopped"
     }
 
     private func ingest(_ chunk: Data, from source: Process) {
@@ -155,13 +156,13 @@ final class NetsimBridgeProcess {
             append(trimmed)
             // Surface the most meaningful states as the one-line status.
             if trimmed.contains("Advertising on netsim") {
-                statusLine = "Advertising on netsim — connect from the emulator."
-            } else if trimmed.contains("GATT received") {
-                statusLine = "GATT mirrored. " + trimmed
+                statusLine = "Visible in the emulator"
             } else if trimmed.contains("Waiting for the GATT") {
-                statusLine = "Waiting for a device in MacPhone…"
-            } else if trimmed.lowercased().contains("could not reach") {
-                statusLine = trimmed
+                statusLine = "Waiting for a device"
+            } else if trimmed.contains("ModuleNotFoundError") || trimmed.contains("No module named") {
+                lastError = "The bridge runtime is incomplete. Open Setup and reinstall it."
+            } else if trimmed.localizedCaseInsensitiveContains("netsim") && trimmed.localizedCaseInsensitiveContains("error") {
+                lastError = "netsim is not reachable. Start an Android emulator first."
             }
         }
     }
@@ -175,20 +176,25 @@ final class NetsimBridgeProcess {
         guard ended === process else { return }
         readHandle?.readabilityHandler = nil
         readHandle = nil
-        // A process that ends while we still thought it was running, and that we did not
-        // ask to stop, has crashed — say so instead of the neutral "stopped".
-        if isRunning && !intentionalStop {
-            append("Bridge process exited unexpectedly.")
-            if lastError == nil { statusLine = "Bridge exited unexpectedly. Check the log." }
-        } else if lastError == nil {
-            statusLine = "Bridge stopped."
-        }
         if !pendingOutput.isEmpty {
             ingest(String(decoding: pendingOutput, as: UTF8.self))
             pendingOutput = Data()
         }
         isRunning = false
         process = nil
+
+        if !intentionalStop && ended.terminationStatus == Self.exitGATTChanged {
+            append("Device changed; restarting the bridge.")
+            start(port: lastPort, token: lastToken)
+            return
+        }
+        if !intentionalStop {
+            let reason = lastError ?? log.last { !$0.hasPrefix("[") } ?? "exit code \(ended.terminationStatus)"
+            lastError = "The bridge stopped: \(reason)"
+            statusLine = "Stopped unexpectedly"
+        } else {
+            statusLine = "Stopped"
+        }
     }
 
     private func fail(_ message: String) {

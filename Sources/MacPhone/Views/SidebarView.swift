@@ -3,37 +3,30 @@ import SwiftUI
 struct SidebarView: View {
     @Binding var selection: String
     let store: DeviceStore
+    let setup: SetupStore
+    let ble: BLEBridgeService
 
     var body: some View {
         List(selection: $selection) {
-            ForEach(DeviceSection.allCases) { section in
-                Label(section.title, systemImage: section.symbol)
-                    .tag(section.rawValue)
+            row(.bridge)
+                .badge(ble.isMirroring ? Text("On") : nil)
+
+            Section("Devices") {
+                row(.running).badge(store.runningDevices.count)
+                row(.android).badge(store.androidDevices.count)
+                row(.simulators).badge(store.simulatorDevices.count)
             }
 
-            Section("Status") {
-                StatusRow(title: "Android", count: store.androidDevices.count, symbol: "app.badge")
-                StatusRow(title: "iOS", count: store.iosDevices.count, symbol: "iphone")
-                StatusRow(title: "Issues", count: store.issues.count, symbol: "exclamationmark.triangle")
+            Section {
+                row(.setup)
+                    .badge(setup.missingRequired.isEmpty ? nil : Text("\(setup.missingRequired.count) missing"))
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("MacPhone")
     }
-}
 
-private struct StatusRow: View {
-    let title: String
-    let count: Int
-    let symbol: String
-
-    var body: some View {
-        HStack {
-            Label(title, systemImage: symbol)
-            Spacer()
-            Text(count, format: .number)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-        }
+    private func row(_ section: AppSection) -> some View {
+        Label(section.title, systemImage: section.symbol)
+            .tag(section.rawValue)
     }
 }

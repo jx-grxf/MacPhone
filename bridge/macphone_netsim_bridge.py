@@ -16,12 +16,11 @@ connected to over its internal radio — no external Bluetooth dongle involved.
         ▼  127.0.0.1:8765 (newline JSON)   │
     THIS SCRIPT  ──Bumble peripheral──▶  android-netsim ──▶  Android app
 
-Run order:
+MacPhone starts this script itself ("Mirror to Emulator"). To run it by hand:
     1. Start the Android emulator (so netsim is up).
-    2. In MacPhone: Bluetooth tab → Scan → Connect to the target device →
-       wait for the GATT tree → Start Server.
+    2. In MacPhone, connect to a device or start the demo device.
     3. python3 macphone_netsim_bridge.py
-    4. In the Android app, scan for "MacPhone Bridge" and connect.
+    4. In the Android app, scan and connect as you would to the real device.
 
 Reads on the Android side are forwarded to the real device on demand; writes are
 forwarded through; and every notify/indicate characteristic is auto-subscribed so
@@ -48,8 +47,53 @@ BRIDGE_PORT = int(os.environ.get("MACPHONE_BRIDGE_PORT", "8765"))
 PERIPHERAL_NAME = "MacPhone Bridge"
 PERIPHERAL_ADDRESS = "F0:F1:F2:F3:F4:F5"
 READ_TIMEOUT = 5.0
-CLIENT_IDLE_TIMEOUT = float(os.environ.get("MACPHONE_CLIENT_IDLE_TIMEOUT", "45"))
+CLIENT_IDLE_TIMEOUT = float(os.environ.get("MACPHONE_CLIENT_IDLE_TIMEOUT", "120"))
 PARENT_PID = int(os.environ.get("MACPHONE_PARENT_PID", "0"))
+TOKEN_FILE = pathlib.Path.home() / "Library/Application Support/MacPhone/bridge-token"
+
+
+def bridge_token():
+    """MacPhone passes the session token in the environment. A bridge started by hand reads
+    the copy MacPhone keeps in a file only this user can read."""
+    token = os.environ.get("MACPHONE_BRIDGE_TOKEN")
+    if token:
+        return token
+    try:
+        return TOKEN_FILE.read_text().strip()
+    except OSError:
+        return ""
+
+
+BRIDGE_TOKEN = bridge_token()
+
+# Exit code that asks MacPhone to restart the bridge: the Mac switched to a device with a
+# different GATT layout, and Bumble cannot swap services on a powered-on device.
+EXIT_GATT_CHANGED = 75
+
+_background_tasks = set()
+
+
+def spawn(coroutine, critical=True):
+    """Keep a reference to background tasks. A critical task that crashes stops the bridge
+    instead of leaving it advertising a dead mirror with the error lost in "Task exception
+    never retrieved"; other failures are logged."""
+    task = asyncio.get_running_loop().create_task(coroutine)
+    _background_tasks.add(task)
+
+    def _done(finished):
+        _background_tasks.discard(finished)
+        if finished.cancelled():
+            return
+        error = finished.exception()
+        if error is None:
+            return
+        if critical:
+            print(f"[bridge] background task failed: {error!r}; stopping.")
+            os._exit(1)
+        print(f"[bridge] {error!r}")
+
+    task.add_done_callback(_done)
+    return task
 
 
 async def stop_when_parent_exits():
@@ -154,7 +198,8 @@ class BridgeClient:
     def __init__(self):
         self.reader = None
         self.writer = None
-        self.gatt = asyncio.get_event_loop().create_future()
+        self.gatt = asyncio.get_running_loop().create_future()
+        self.on_gatt_update = None  # callback(services) for every GATT after the first
         # Advertisement of the real device (name + manufacturer data), forwarded by MacPhone.
         self.advertisement = {}
         # Keyed by both "service/char" and bare "char" so a read resolves regardless of
@@ -165,7 +210,11 @@ class BridgeClient:
         self.on_android_activity = None
 
     async def connect(self):
-        self.reader, self.writer = await asyncio.open_connection(BRIDGE_HOST, BRIDGE_PORT)
+        self.reader, self.writer = await asyncio.open_connection(
+            BRIDGE_HOST, BRIDGE_PORT, limit=1024 * 1024
+        )
+        # MacPhone drops every client that does not open with this session token.
+        self._send({"cmd": "hello", "token": BRIDGE_TOKEN})
 
     def _resolve_read(self, keys, data):
         for key in keys:
@@ -184,11 +233,9 @@ class BridgeClient:
         while True:
             line = await self.reader.readline()
             if not line:
-                print("[bridge] connection closed by MacPhone")
+                print("[bridge] MacPhone closed the connection; stopping.")
                 self._fail_pending()
-                if self.on_state:
-                    self.on_state("closed")
-                return
+                os._exit(0)
             try:
                 msg = json.loads(line.decode("utf-8"))
             except json.JSONDecodeError:
@@ -202,6 +249,8 @@ class BridgeClient:
                       f"advertisement: {self.advertisement or 'none'}")
                 if not self.gatt.done():
                     self.gatt.set_result(services)
+                elif self.on_gatt_update:
+                    self.on_gatt_update(services)
             elif kind in ("readResult", "notification", "value"):
                 service = msg.get("service")
                 char = (msg.get("characteristic") or "").lower()
@@ -228,7 +277,7 @@ class BridgeClient:
         if self.on_android_activity:
             self.on_android_activity()
         print(f"[android -> device] READ  {service}/{uuid}")
-        fut = asyncio.get_event_loop().create_future()
+        fut = asyncio.get_running_loop().create_future()
         self._read_waiters.setdefault(_route_key(service, uuid), []).append(fut)
         self._send({"cmd": "read", "service": service, "characteristic": uuid})
         try:
@@ -300,7 +349,7 @@ def build_advertising(advertisement, services_desc):
         scan.append((name_type, name_bytes))
         scan_used += encoded_len(name_bytes)
 
-    # Service data (e.g. Xiaomi FE95 MiBeacon) is another recognition signal some apps read.
+    # Service data is another signal some apps use to recognise a device model.
     # 16-bit-UUID service data is compact, so try the main packet first, else the scan resp.
     for uuid, value_hex in (advertisement.get("serviceData") or {}).items():
         uuid16 = _uuid16(uuid)
@@ -391,8 +440,35 @@ def build_services(services_desc, bridge):
     return services, char_by_key
 
 
+def gatt_shape(services_desc):
+    """Service and characteristic UUIDs with properties, to tell a reconnect of the same
+    device apart from a different device."""
+    return sorted(
+        (
+            (s.get("uuid") or "").lower(),
+            tuple(sorted(
+                ((c.get("uuid") or "").lower(), tuple(sorted(c.get("properties", []))))
+                for c in s.get("characteristics", [])
+            )),
+        )
+        for s in services_desc
+    )
+
+
+def subscribe_all(bridge, services_desc):
+    """Subscribe on the real device to everything that can notify, so the emulator gets the
+    live stream without the app having to ask first. Sent again after every reconnect,
+    because CoreBluetooth drops subscriptions when the link goes down."""
+    for service_desc in services_desc:
+        svc = service_desc["uuid"]
+        for char_desc in service_desc.get("characteristics", []):
+            props = char_desc.get("properties", [])
+            if "notify" in props or "indicate" in props:
+                bridge.subscribe(char_desc.get("service", svc), char_desc["uuid"], True)
+
+
 async def main():
-    asyncio.create_task(stop_when_parent_exits())
+    spawn(stop_when_parent_exits())
     bridge = BridgeClient()
     try:
         await bridge.connect()
@@ -401,7 +477,7 @@ async def main():
         print("In MacPhone: connect to a device, then press 'Start Server'.")
         sys.exit(1)
 
-    asyncio.create_task(bridge.run())
+    spawn(bridge.run())
     print("Connected to MacPhone. Waiting for the GATT mirror "
           "(connect to a device in MacPhone)…")
     services_desc = await bridge.gatt
@@ -419,22 +495,6 @@ async def main():
         for service in services:
             device.add_service(service)
 
-        def on_value(key, char_uuid, data):
-            characteristic = char_by_key.get(key) or char_by_key.get(char_uuid.lower())
-            if characteristic is not None:
-                print(f"[device -> android] NOTIFY {key}: {data.hex(' ')}")
-                asyncio.create_task(device.notify_subscribers(characteristic, value=data))
-
-        bridge.on_value = on_value
-
-        def on_state(state):
-            if state in ("disconnected", "closed"):
-                print(f"[bridge] real device {state}; notifications paused until it returns.")
-
-        bridge.on_state = on_state
-
-        await device.power_on()
-
         active_connection = [None]
         last_client_activity = [0.0]
 
@@ -442,6 +502,36 @@ async def main():
             last_client_activity[0] = asyncio.get_running_loop().time()
 
         bridge.on_android_activity = mark_client_activity
+
+        def on_value(key, char_uuid, data):
+            characteristic = char_by_key.get(key) or char_by_key.get(char_uuid.lower())
+            if characteristic is not None:
+                print(f"[device -> android] NOTIFY {key}: {data.hex(' ')}")
+                # A client that only listens to notifications is busy, not idle.
+                if active_connection[0] is not None:
+                    mark_client_activity()
+                spawn(device.notify_subscribers(characteristic, value=data), critical=False)
+
+        bridge.on_value = on_value
+
+        def on_state(state):
+            if state == "disconnected":
+                print("[bridge] real device disconnected; notifications paused until it returns.")
+
+        bridge.on_state = on_state
+
+        mirrored_shape = gatt_shape(services_desc)
+
+        def on_gatt_update(services):
+            if gatt_shape(services) != mirrored_shape:
+                print("[bridge] MacPhone switched to a device with a different GATT; restarting.")
+                os._exit(EXIT_GATT_CHANGED)
+            print("[bridge] real device back; renewing notification subscriptions.")
+            subscribe_all(bridge, services)
+
+        bridge.on_gatt_update = on_gatt_update
+
+        await device.power_on()
 
         @device.on("connection")
         def on_connection(connection):
@@ -473,23 +563,15 @@ async def main():
                 except Exception as error:
                     print(f"[netsim] stale-client disconnect failed: {error}")
 
-        asyncio.create_task(disconnect_stale_client())
-
-        # Auto-subscribe on the real device for everything that can notify, so the
-        # emulator receives the live stream without the app having to ask first.
-        for service_desc in services_desc:
-            svc = service_desc["uuid"]
-            for char_desc in service_desc.get("characteristics", []):
-                props = char_desc.get("properties", [])
-                if "notify" in props or "indicate" in props:
-                    bridge.subscribe(char_desc.get("service", svc), char_desc["uuid"], True)
+        spawn(disconnect_stale_client())
+        subscribe_all(bridge, services_desc)
 
         advertising_data, scan_response_data, adv_name = build_advertising(
             bridge.advertisement, services_desc
         )
         await device.start_advertising(
             advertising_type=AdvertisingType.UNDIRECTED_CONNECTABLE_SCANNABLE,
-            # PUBLIC so apps that reconnect by MAC (e.g. XiaoDash) match the controller's
+            # PUBLIC so apps that reconnect by MAC address match the controller's
             # filter-accept-list entry — a RANDOM advertiser silently times out on connect.
             own_address_type=OwnAddressType.PUBLIC,
             auto_restart=True,
@@ -505,7 +587,7 @@ async def main():
                   f"({bridge.advertisement['manufacturerData']}) so model-matching apps recognise it.")
         print("Scan for it in the Android app under test. Ctrl+C to stop.")
 
-        await asyncio.get_event_loop().create_future()  # run forever
+        await asyncio.get_running_loop().create_future()  # run forever
 
 
 if __name__ == "__main__":

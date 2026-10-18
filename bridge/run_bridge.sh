@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
-# Runs the netsim bridge against the live MacPhone app (BLEBridgeServer on 127.0.0.1:8765).
+# Runs the netsim bridge by hand against a running MacPhone. MacPhone normally starts it
+# itself ("Mirror to Emulator"); this is for working on the bridge.
 #
-# Prereqs:
-#   1. Android emulator running (so netsim is up).
-#   2. In MacPhone: Bluetooth tab → Scan → Connect to a BLE device → Start Server.
-#
-# Then: ./run_bridge.sh   (keeps running until Ctrl+C)
+# Needs: a running Android emulator, and a device (or the demo device) active in MacPhone.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-if [ ! -d .venv ]; then
-  echo "Creating venv + installing bumble…"
+if [ ! -x .venv/bin/python ]; then
   python3 -m venv .venv
   .venv/bin/python -m pip install --quiet --upgrade pip
-  .venv/bin/python -m pip install --quiet bumble
+  .venv/bin/python -m pip install --quiet -r requirements.txt
 fi
 
 exec .venv/bin/python -u macphone_netsim_bridge.py

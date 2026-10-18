@@ -1,26 +1,24 @@
 import Foundation
 import Observation
 import Network
+import Security
 
-/// Localhost TCP server that exposes the live GATT mirror to the emulator side.
+/// Localhost TCP server that hands the live GATT mirror to the netsim bridge.
 ///
-/// The Mac connects to the real peripheral over CoreBluetooth (internal radio, central
-/// role). This server re-publishes that peripheral's services, characteristics and live
-/// notification traffic as newline-delimited JSON on 127.0.0.1, and accepts read/write/
-/// subscribe commands back. A Bumble virtual peripheral on the Android emulator's netsim
-/// controller consumes this feed and presents the same GATT to the app under test — so
-/// no external USB Bluetooth controller is required.
+/// One JSON object per line. Every client must open with
+/// `{"cmd":"hello","token":"…"}` carrying the per-launch session token; anything else is
+/// disconnected. Without that, any web page could POST GATT writes to 127.0.0.1 and reach
+/// the real device while a mirror is running.
 ///
-/// Protocol (one JSON object per line, UTF-8):
-///   Server → client events:
-///     {"type":"state","value":"connected"}
-///     {"type":"gatt","services":[{"uuid":"…","characteristics":[{"uuid":"…","service":"…","properties":["read","notify"]}]}]}
-///     {"type":"readResult","service":"…","characteristic":"…","value":"<hex>"}
-///     {"type":"notification","service":"…","characteristic":"…","value":"<hex>"}
-///   Client → server commands (service is optional but disambiguates duplicate char UUIDs):
+///   Server → client:
+///     {"type":"state","value":"connected"|"disconnected"}
+///     {"type":"gatt","services":[…],"advertisement":{…}}
+///     {"type":"readResult"|"notification","service":"…","characteristic":"…","value":"<hex>"}
+///   Client → server:
 ///     {"cmd":"read","service":"…","characteristic":"…"}
 ///     {"cmd":"subscribe","service":"…","characteristic":"…","enabled":true}
 ///     {"cmd":"write","service":"…","characteristic":"…","value":"<hex>","withResponse":true}
+///     {"cmd":"resetSession"}
 @Observable
 @MainActor
 final class BLEBridgeServer {
@@ -29,164 +27,251 @@ final class BLEBridgeServer {
     private(set) var clientCount = 0
     private(set) var lastError: String?
 
-    /// Invoked when a client sends a command. Wired to the BLE service by the owner.
+    /// Fresh for every app launch; handed to the bridge process and written to a 0600 file
+    /// for a bridge started by hand.
+    let token: String = BLEBridgeServer.makeToken()
+
     var onCommand: ((BridgeCommand) -> Void)?
-    /// Invoked when a new client connects, so the owner can replay the current
-    /// connection state + GATT snapshot (a client that joins after a device is already
-    /// connected would otherwise never receive the GATT).
-    var onClientConnected: (() -> Void)?
+    /// Called after a client authenticated, so the owner can replay state and GATT.
+    var onClientReady: (() -> Void)?
 
     private var listener: NWListener?
-    private var connections: [ObjectIdentifier: NWConnection] = [:]
+    private var clients: [ObjectIdentifier: Client] = [:]
     private let queue = DispatchQueue(label: "dev.johannesgrof.MacPhone.bridge")
 
-    enum BridgeCommand {
-        case read(service: String?, characteristic: String)
-        case subscribe(service: String?, characteristic: String, enabled: Bool)
-        case write(service: String?, characteristic: String, hex: String, withResponse: Bool)
-        case resetSession
+    private struct Client {
+        let connection: NWConnection
+        var authenticated = false
     }
+
+    static let maxClients = 2
+    nonisolated static let maxLineLength = 256 * 1024
 
     func start(port: UInt16 = 8765) {
         guard listener == nil else { return }
         guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
-            lastError = "Invalid bridge port: \(port)."
+            lastError = "Invalid bridge port \(port)."
             return
         }
         self.port = port
+        writeTokenFile()
         do {
-            let params = NWParameters.tcp
-            params.requiredLocalEndpoint = NWEndpoint.hostPort(
-                host: "127.0.0.1",
-                port: endpointPort
-            )
-            let listener = try NWListener(using: params)
+            let parameters = NWParameters.tcp
+            parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: endpointPort)
+            parameters.allowLocalEndpointReuse = true
+            let listener = try NWListener(using: parameters)
             self.listener = listener
-
-            listener.stateUpdateHandler = { [weak self] state in
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
                 Task { @MainActor in
+                    guard let self, let listener, self.listener === listener else { return }
                     switch state {
                     case .ready:
-                        self?.isRunning = true
-                        self?.lastError = nil
+                        self.isRunning = true
+                        self.lastError = nil
                     case .failed(let error):
-                        self?.isRunning = false
-                        self?.lastError = error.localizedDescription
-                        self?.stop()
-                    case .cancelled:
-                        self?.isRunning = false
+                        self.lastError = "Bridge port \(port) is unavailable: \(error.localizedDescription)"
+                        self.stop()
                     default:
                         break
                     }
                 }
             }
             listener.newConnectionHandler = { [weak self] connection in
-                self?.accept(connection)
+                Task { @MainActor in self?.accept(connection) }
             }
             listener.start(queue: queue)
         } catch {
             lastError = error.localizedDescription
-            isRunning = false
         }
     }
 
     func stop() {
-        for connection in connections.values { connection.cancel() }
-        connections.removeAll()
+        clients.values.forEach { $0.connection.cancel() }
+        clients.removeAll()
         clientCount = 0
         listener?.cancel()
         listener = nil
         isRunning = false
     }
 
-    /// Broadcast a JSON-encodable event to every connected client.
     func broadcast(_ object: [String: Any]) {
-        guard !connections.isEmpty,
-              let data = try? JSONSerialization.data(withJSONObject: object) else { return }
-        var line = data
-        line.append(0x0A) // newline delimiter
-        for connection in connections.values {
-            connection.send(content: line, completion: .contentProcessed { _ in })
+        let targets = clients.values.filter(\.authenticated).map(\.connection)
+        guard !targets.isEmpty, var line = try? JSONSerialization.data(withJSONObject: object) else { return }
+        line.append(0x0A)
+        for connection in targets {
+            connection.send(content: line, completion: .contentProcessed { error in
+                if error != nil { connection.cancel() }
+            })
         }
     }
 
     // MARK: Connections
 
-    nonisolated private func accept(_ connection: NWConnection) {
-        let key = ObjectIdentifier(connection)
-        Task { @MainActor in
-            self.connections[key] = connection
-            self.clientCount = self.connections.count
-            self.onClientConnected?()
+    private func accept(_ connection: NWConnection) {
+        guard clients.count < Self.maxClients else {
+            connection.cancel()
+            return
         }
-
+        let key = ObjectIdentifier(connection)
+        clients[key] = Client(connection: connection)
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .failed, .cancelled:
-                Task { @MainActor in
-                    self?.connections[key] = nil
-                    self?.clientCount = self?.connections.count ?? 0
-                }
+                Task { @MainActor in self?.drop(key) }
             default:
                 break
             }
         }
         connection.start(queue: queue)
-        receive(on: connection, buffer: Data())
+        receive(on: connection, key: key, buffer: Data())
+
+        // A client that never says hello is not a bridge.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            if let client = self?.clients[key], !client.authenticated { client.connection.cancel() }
+        }
     }
 
-    /// Upper bound on a single newline-delimited command. A well-behaved bridge client sends
-    /// short JSON lines; anything larger is a malformed/runaway client and is dropped rather
-    /// than buffered without limit.
-    nonisolated private static let maxLineLength = 256 * 1024
+    private func drop(_ key: ObjectIdentifier) {
+        clients[key] = nil
+        clientCount = clients.values.filter(\.authenticated).count
+    }
 
-    nonisolated private func receive(on connection: NWConnection, buffer: Data) {
+    nonisolated private func receive(on connection: NWConnection, key: ObjectIdentifier, buffer: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
-            var working = buffer
-            if let data, !data.isEmpty { working.append(data) }
+            var pending = buffer
+            if let data { pending.append(data) }
 
-            // Split on newline; dispatch each complete line as a command.
-            while let newlineIndex = working.firstIndex(of: 0x0A) {
-                let lineData = working[working.startIndex..<newlineIndex]
-                if let command = Self.parseCommand(Data(lineData)) {
-                    Task { @MainActor in self?.onCommand?(command) }
-                }
-                working = Data(working[working.index(after: newlineIndex)...])
+            var lines: [Data] = []
+            var start = pending.startIndex
+            while let newline = pending[start...].firstIndex(of: 0x0A) {
+                lines.append(pending[start..<newline])
+                start = pending.index(after: newline)
             }
+            pending = Data(pending[start...])
 
-            if error != nil || isComplete {
+            if !lines.isEmpty {
+                Task { @MainActor in self?.handle(lines, from: key) }
+            }
+            if error != nil || isComplete || pending.count > Self.maxLineLength {
                 connection.cancel()
                 return
             }
-            // No newline yet but the pending buffer is already oversized: the peer is not
-            // speaking the line protocol. Close it instead of growing memory unbounded.
-            if working.count > Self.maxLineLength {
-                connection.cancel()
-                return
-            }
-            self?.receive(on: connection, buffer: working)
+            self?.receive(on: connection, key: key, buffer: pending)
         }
     }
 
-    nonisolated private static func parseCommand(_ data: Data) -> BridgeCommand? {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let cmd = object["cmd"] as? String else { return nil }
+    private func handle(_ lines: [Data], from key: ObjectIdentifier) {
+        for line in lines {
+            guard var client = clients[key] else { return }
+            guard let message = BridgeMessage.parse(line) else {
+                // HTTP request lines and other junk mean this is not our bridge.
+                client.connection.cancel()
+                return
+            }
+            if !client.authenticated {
+                guard case .hello(let offered) = message, Self.constantTimeEqual(offered, token) else {
+                    client.connection.cancel()
+                    return
+                }
+                client.authenticated = true
+                clients[key] = client
+                clientCount = clients.values.filter(\.authenticated).count
+                onClientReady?()
+                continue
+            }
+            if case .command(let command) = message { onCommand?(command) }
+        }
+    }
 
-        if cmd == "resetSession" {
-            return .resetSession
+    // MARK: Token
+
+    nonisolated static var tokenFile: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("MacPhone/bridge-token")
+    }
+
+    private func writeTokenFile() {
+        let file = Self.tokenFile
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: file.path, contents: Data(token.utf8), attributes: [.posixPermissions: 0o600])
+    }
+
+    private static func makeToken() -> String {
+        var bytes = [UInt8](repeating: 0, count: 24)
+        if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) != errSecSuccess {
+            return UUID().uuidString + UUID().uuidString
+        }
+        return Data(bytes).hexString
+    }
+
+    private static func constantTimeEqual(_ lhs: String, _ rhs: String) -> Bool {
+        let a = Array(lhs.utf8), b = Array(rhs.utf8)
+        guard a.count == b.count else { return false }
+        return zip(a, b).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
+    }
+}
+
+enum BridgeCommand: Equatable, Sendable {
+    case read(service: String?, characteristic: String)
+    case subscribe(service: String?, characteristic: String, enabled: Bool)
+    case write(service: String?, characteristic: String, hex: String, withResponse: Bool)
+    case resetSession
+}
+
+enum BridgeMessage: Equatable, Sendable {
+    case hello(String)
+    case command(BridgeCommand)
+    /// Well-formed JSON the server does not act on.
+    case ignored
+
+    static func parse(_ data: Data) -> BridgeMessage? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cmd = object["cmd"] as? String
+        else { return nil }
+
+        switch cmd {
+        case "hello":
+            return (object["token"] as? String).map(BridgeMessage.hello)
+        case "resetSession":
+            return .command(.resetSession)
+        default:
+            break
         }
 
-        guard let characteristic = object["characteristic"] as? String else { return nil }
-        let service = object["service"] as? String
+        // UUIDs are validated here, before anything reaches CBUUID(string:), which raises an
+        // uncatchable Objective-C exception on malformed input.
+        guard let characteristic = (object["characteristic"] as? String).flatMap(BluetoothUUID.normalized) else {
+            return .ignored
+        }
+        let rawService = object["service"] as? String
+        let service = rawService.flatMap(BluetoothUUID.normalized)
+        if let rawService, !rawService.isEmpty, service == nil { return .ignored }
 
         switch cmd {
         case "read":
-            return .read(service: service, characteristic: characteristic)
+            return .command(.read(service: service, characteristic: characteristic))
         case "subscribe":
-            return .subscribe(service: service, characteristic: characteristic, enabled: object["enabled"] as? Bool ?? true)
+            return .command(.subscribe(service: service, characteristic: characteristic, enabled: object["enabled"] as? Bool ?? true))
         case "write":
-            guard let value = object["value"] as? String else { return nil }
-            return .write(service: service, characteristic: characteristic, hex: value, withResponse: object["withResponse"] as? Bool ?? true)
+            guard let value = object["value"] as? String, Data(hexString: value) != nil else { return .ignored }
+            return .command(.write(service: service, characteristic: characteristic, hex: value, withResponse: object["withResponse"] as? Bool ?? true))
+        default:
+            return .ignored
+        }
+    }
+}
+
+enum BluetoothUUID {
+    /// Uppercased 16-bit, 32-bit or 128-bit UUID string, or nil if `CBUUID` would reject it.
+    static func normalized(_ raw: String) -> String? {
+        let text = raw.trimmingCharacters(in: .whitespaces).uppercased()
+        let hex = CharacterSet(charactersIn: "0123456789ABCDEF")
+        switch text.count {
+        case 4, 8:
+            return text.unicodeScalars.allSatisfy(hex.contains) ? text : nil
+        case 36:
+            return UUID(uuidString: text) != nil ? text : nil
         default:
             return nil
         }

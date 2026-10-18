@@ -3,16 +3,14 @@
 <plist version="1.0">
 <dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>MacPhone uses Bluetooth to bridge BLE accessories to emulator and simulator test clients.</string>
+	<string>MacPhone connects to Bluetooth LE devices so it can mirror them into the Android emulator.</string>
 	<key>SUFeedURL</key>
 	<string>https://github.com/jx-grxf/MacPhone/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>$(MACPHONE_SPARKLE_PUBLIC_KEY)</string>
-	<key>SUEnableInstallerLauncherService</key>
-	<true/>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUScheduledCheckInterval</key>
-	<integer>3600</integer>
+	<integer>86400</integer>
 </dict>
 </plist>
