@@ -14,9 +14,9 @@ GATT = {
         {"uuid": "180F", "characteristics": [
             {"uuid": "2A19", "properties": ["read", "notify"]},
         ]},
-        {"uuid": "0000fe95-0000-1000-8000-00805f9b34fb", "characteristics": [
-            {"uuid": "0000fe01-0000-1000-8000-00805f9b34fb", "properties": ["write", "notify"]},
-            {"uuid": "0000fe02-0000-1000-8000-00805f9b34fb", "properties": ["read"]},
+        {"uuid": "6e400001-b5a3-f393-e0a9-e50e24dcca9e", "characteristics": [
+            {"uuid": "6e400003-b5a3-f393-e0a9-e50e24dcca9e", "properties": ["notify"]},
+            {"uuid": "6e400002-b5a3-f393-e0a9-e50e24dcca9e", "properties": ["write"]},
         ]},
     ],
 }

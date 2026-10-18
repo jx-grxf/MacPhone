@@ -86,19 +86,30 @@ DESCRIPTION_HTML=""
 if [[ -f RELEASE_NOTES.md ]]; then
   DESCRIPTION_HTML="$(perl -0777 -ne '
     if (/^##[ ].*?\n(.*?)(?=^##[ ]|\z)/ms) {
-      my $body = $1; my @out; my $inlist = 0;
+      my $body = $1; my @items; my $skip = 0;
+      # Join wrapped bullet lines first, so a bullet that spans lines stays whole.
       for my $line (split /\n/, $body) {
         if ($line =~ /^###\s+(.+?)\s*$/) {
-          my $h = $1; next if $h =~ /^Compatibility/i;
-          push @out, "</ul>" if $inlist; $inlist = 0;
-          $h =~ s/&/&amp;/g; $h =~ s/</&lt;/g; $h =~ s/>/&gt;/g;
-          push @out, "<h4>$h</h4>";
+          $skip = ($1 =~ /^Compatibility/i);
+          push @items, ["h", $1] unless $skip;
+        } elsif ($skip) {
+          next;
         } elsif ($line =~ /^[-*]\s+(.+?)\s*$/) {
-          my $t = $1;
-          $t = $1 if $t =~ /^\*\*(.+?)\*\*/;
-          $t =~ s/\s*[.:]\s*$//;
-          $t =~ s/&/&amp;/g; $t =~ s/</&lt;/g; $t =~ s/>/&gt;/g;
-          $t =~ s/`(.+?)`/<code>$1<\/code>/g;
+          push @items, ["li", $1];
+        } elsif ($line =~ /^\s+(\S.*?)\s*$/ && @items && $items[-1][0] eq "li") {
+          $items[-1][1] .= " $1";
+        }
+      }
+      my @out; my $inlist = 0;
+      for my $item (@items) {
+        my ($kind, $t) = @$item;
+        $t =~ s/&/&amp;/g; $t =~ s/</&lt;/g; $t =~ s/>/&gt;/g;
+        $t =~ s/\*\*(.+?)\*\*/<strong>$1<\/strong>/g;
+        $t =~ s/`(.+?)`/<code>$1<\/code>/g;
+        if ($kind eq "h") {
+          push @out, "</ul>" if $inlist; $inlist = 0;
+          push @out, "<h4>$t</h4>";
+        } else {
           push @out, "<ul>" unless $inlist; $inlist = 1;
           push @out, "<li>$t</li>";
         }

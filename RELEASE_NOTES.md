@@ -1,5 +1,36 @@
 # MacPhone release notes
 
+## 0.3.0
+
+### New
+
+- The Bluetooth bridge shows each step from device to emulator with its own status, and tells you which one is missing.
+- Simulators for every Apple platform, grouped by device type, with search and a running-only filter.
+- Drop an .app or .apk on a running device to install it. Open URLs, take screenshots, switch light and dark mode, and set a clean 9:41 status bar from the device menu.
+- Rename, duplicate, erase and delete simulators and emulators.
+- New emulators use Android 14 to 17 images.
+- Setup finds the Homebrew Android tools and lets you pick an SDK folder in Settings.
+
+### Fixed
+
+- The bridge runtime now installs Bumble with the gRPC support netsim needs. Before, mirroring failed on a fresh Mac.
+- Notifications keep flowing after the emulator app reconnects.
+- Stop works in every state, including while a connection or reconnect is pending.
+- The Setup tab no longer freezes when several simulator runtimes are installed.
+- Malformed bridge messages can no longer crash the app, and only the bridge MacPhone started can talk to the connected device.
+- Emulator start failures and a stopped bridge show the reason.
+- Erasing a running emulator waits for it to shut down first.
+- MacPhone only changes hardware settings of emulators it created.
+
+### Removed
+
+- The virtual scooter profiles and the Ninebot test fixture.
+
+### Compatibility
+
+- macOS 14 or later, Apple silicon.
+- Not notarized yet. On first launch, open System Settings → Privacy & Security and choose Open Anyway.
+
 ## 0.2.1
 
 ### Fixed

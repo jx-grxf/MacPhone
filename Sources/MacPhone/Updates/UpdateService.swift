@@ -45,6 +45,9 @@ final class UpdateService: NSObject {
     /// triggered a SwiftUI refresh — the "Last check" row stayed stale after a
     /// check. We snapshot it here and refresh on every finished update cycle.
     private(set) var lastCheckDate: Date?
+    /// False while a check or an install is in progress.
+    private(set) var canCheckForUpdates = false
+    private var canCheckObservation: NSKeyValueObservation?
 
     override init() {
         let storedChannel = UserDefaults.standard.string(forKey: Keys.channel)
@@ -60,6 +63,13 @@ final class UpdateService: NSObject {
         )
         super.init()
         self.lastCheckDate = controller.updater.lastUpdateCheckDate
+        self.canCheckForUpdates = controller.updater.canCheckForUpdates
+        canCheckObservation = controller.updater.observe(\.canCheckForUpdates, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.canCheckForUpdates = self.controller.updater.canCheckForUpdates
+            }
+        }
         delegate.onCheckCompleted = { [weak self] date in
             Task { @MainActor in self?.lastCheckDate = date }
         }
@@ -83,6 +93,7 @@ final class UpdateService: NSObject {
     /// Manual / menu-triggered check. When an update is already pending this
     /// re-presents the standard update dialog immediately.
     func checkForUpdates() {
+        guard controller.updater.canCheckForUpdates else { return }
         controller.checkForUpdates(nil)
     }
 
@@ -148,10 +159,6 @@ private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
     }
 
     func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
-        onNoPendingUpdate?()
-    }
-
-    func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         onNoPendingUpdate?()
     }
 
