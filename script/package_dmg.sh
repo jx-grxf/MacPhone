@@ -105,7 +105,7 @@ cp -R "$APP_SRC" dist/MacPhone.app
 # Ad-hoc preview builds are signed "-" by the build; re-sign deeply so the
 # embedded Sparkle.framework + XPC services validate as a unit.
 if [[ -z "${MACPHONE_SIGN_IDENTITY:-}" ]]; then
-  codesign --force --deep --sign - dist/MacPhone.app
+  codesign --force --deep --sign - --entitlements Config/MacPhone.entitlements dist/MacPhone.app
 fi
 codesign --verify --deep --strict dist/MacPhone.app
 

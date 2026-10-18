@@ -1,5 +1,16 @@
 # MacPhone release notes
 
+## 0.3.1
+
+### Fixed
+
+- The Emulator step of the Bluetooth bridge shows "App connected" only while an app in the emulator is connected to the mirrored device.
+
+### Compatibility
+
+- macOS 14 or later, Apple silicon.
+- Not notarized yet. On first launch, open System Settings → Privacy & Security and choose Open Anyway.
+
 ## 0.3.0
 
 ### New
