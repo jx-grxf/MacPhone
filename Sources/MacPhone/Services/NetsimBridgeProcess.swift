@@ -16,6 +16,8 @@ final class NetsimBridgeProcess {
     private var process: Process?
     private var readHandle: FileHandle?
     private var intentionalStop = false
+    /// Bytes after the last newline of the previous chunk; pipe reads split lines arbitrarily.
+    private var pendingOutput = Data()
 
     /// Where the bridge scripts live. Release builds carry them in the app bundle;
     /// development builds can still use an override or the repository checkout.
@@ -93,12 +95,18 @@ final class NetsimBridgeProcess {
         proc.standardError = pipe
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let chunk = handle.availableData
-            guard !chunk.isEmpty, let text = String(data: chunk, encoding: .utf8) else { return }
-            Task { @MainActor in self?.ingest(text) }
+            if chunk.isEmpty {
+                // EOF: stop polling, otherwise the handler keeps firing with empty data.
+                handle.readabilityHandler = nil
+                return
+            }
+            Task { @MainActor in self?.ingest(chunk, from: proc) }
         }
 
-        proc.terminationHandler = { [weak self] _ in
-            Task { @MainActor in self?.processEnded() }
+        // Only the process we currently own may reset state: after a quick Stop → Start the
+        // old bridge exits late and must not mark the new one as stopped.
+        proc.terminationHandler = { [weak self] ended in
+            Task { @MainActor in self?.processEnded(ended) }
         }
 
         do {
@@ -113,6 +121,7 @@ final class NetsimBridgeProcess {
         intentionalStop = false
         isRunning = true
         lastError = nil
+        pendingOutput = Data()
         log = []
         statusLine = "Starting bridge…"
         append("Launching macphone_netsim_bridge.py on port \(port)…")
@@ -126,6 +135,17 @@ final class NetsimBridgeProcess {
         process = nil
         isRunning = false
         statusLine = "Bridge stopped."
+    }
+
+    private func ingest(_ chunk: Data, from source: Process) {
+        guard source === process else { return }
+        pendingOutput.append(chunk)
+        // Decode only whole lines, so a line (or a multi-byte character) split across two
+        // reads is neither logged in pieces nor dropped as invalid UTF-8.
+        guard let lastNewline = pendingOutput.lastIndex(of: 0x0A) else { return }
+        let complete = pendingOutput[pendingOutput.startIndex...lastNewline]
+        pendingOutput = Data(pendingOutput[pendingOutput.index(after: lastNewline)...])
+        ingest(String(decoding: complete, as: UTF8.self))
     }
 
     private func ingest(_ text: String) {
@@ -151,7 +171,8 @@ final class NetsimBridgeProcess {
         if log.count > 400 { log.removeFirst(log.count - 400) }
     }
 
-    private func processEnded() {
+    private func processEnded(_ ended: Process) {
+        guard ended === process else { return }
         readHandle?.readabilityHandler = nil
         readHandle = nil
         // A process that ends while we still thought it was running, and that we did not
@@ -161,6 +182,10 @@ final class NetsimBridgeProcess {
             if lastError == nil { statusLine = "Bridge exited unexpectedly. Check the log." }
         } else if lastError == nil {
             statusLine = "Bridge stopped."
+        }
+        if !pendingOutput.isEmpty {
+            ingest(String(decoding: pendingOutput, as: UTF8.self))
+            pendingOutput = Data()
         }
         isRunning = false
         process = nil
