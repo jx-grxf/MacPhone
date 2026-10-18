@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 300" width="960" height="300" role="img" aria-labelledby="title desc">
+  <title id="title">How MacPhone bridges a Bluetooth LE device into the Android emulator</title>
+  <desc id="desc">A real Bluetooth LE device talks to the Mac's built-in radio. MacPhone connects to it with CoreBluetooth and passes its services to a local bridge process over a token-protected localhost socket. The bridge publishes the same services on the Android emulator's virtual Bluetooth controller, netsim, where the app under test connects with the normal Android Bluetooth API.</desc>
+  <style>
+    :root { --fg: #1d1d1f; --muted: #6e6e73; --line: #c7c7cc; --box: #ffffff; --frame: #f5f5f7; --accent: #0a84ff; }
+    @media (prefers-color-scheme: dark) {
+      :root { --fg: #f5f5f7; --muted: #a1a1a6; --line: #48484a; --box: #2c2c2e; --frame: #1c1c1e; --accent: #0a84ff; }
+    }
+    text { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif; fill: var(--fg); }
+    .title { font-size: 15px; font-weight: 600; }
+    .sub { font-size: 12px; fill: var(--muted); }
+    .label { font-size: 11px; fill: var(--muted); }
+    .frame-label { font-size: 12px; font-weight: 600; fill: var(--muted); letter-spacing: 0.04em; }
+    .box { fill: var(--box); stroke: var(--line); stroke-width: 1; }
+    .accent { stroke: var(--accent); stroke-width: 1.5; }
+    .frame { fill: var(--frame); stroke: var(--line); stroke-width: 1; stroke-dasharray: 4 4; }
+    .arrow { stroke: var(--accent); stroke-width: 1.5; fill: none; marker-end: url(#head); }
+    .radio { stroke: var(--accent); stroke-width: 1.5; fill: none; stroke-dasharray: 3 4; marker-end: url(#head); }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0a84ff"/>
+    </marker>
+  </defs>
+
+  <rect class="box" x="16" y="104" width="150" height="92" rx="14"/>
+  <text class="title" x="91" y="140" text-anchor="middle">BLE device</text>
+  <text class="sub" x="91" y="160" text-anchor="middle">sensor, lock, band,</text>
+  <text class="sub" x="91" y="176" text-anchor="middle">your own hardware</text>
+
+  <path class="radio" d="M168,150 L226,150" marker-start="url(#head)"/>
+  <text class="label" x="197" y="128" text-anchor="middle">Bluetooth</text>
+  <text class="label" x="197" y="142" text-anchor="middle">LE</text>
+
+  <rect class="frame" x="232" y="36" width="712" height="228" rx="18"/>
+  <text class="frame-label" x="252" y="62">YOUR MAC</text>
+
+  <rect class="box accent" x="252" y="96" width="190" height="108" rx="14"/>
+  <text class="title" x="347" y="132" text-anchor="middle">MacPhone</text>
+  <text class="sub" x="347" y="152" text-anchor="middle">CoreBluetooth central</text>
+  <text class="sub" x="347" y="168" text-anchor="middle">on the built-in radio</text>
+  <text class="sub" x="347" y="184" text-anchor="middle">reads the device's GATT</text>
+
+  <path class="arrow" d="M444,150 L514,150" marker-start="url(#head)"/>
+  <text class="label" x="479" y="128" text-anchor="middle">127.0.0.1</text>
+  <text class="label" x="479" y="142" text-anchor="middle">token</text>
+
+  <rect class="box" x="516" y="96" width="190" height="108" rx="14"/>
+  <text class="title" x="611" y="132" text-anchor="middle">netsim bridge</text>
+  <text class="sub" x="611" y="152" text-anchor="middle">Python + Bumble</text>
+  <text class="sub" x="611" y="168" text-anchor="middle">publishes the same</text>
+  <text class="sub" x="611" y="184" text-anchor="middle">services and name</text>
+
+  <path class="arrow" d="M708,150 L744,150" marker-start="url(#head)"/>
+  <text class="label" x="726" y="138" text-anchor="middle">netsim</text>
+
+  <rect class="box" x="746" y="96" width="182" height="108" rx="14"/>
+  <text class="title" x="837" y="132" text-anchor="middle">Android emulator</text>
+  <text class="sub" x="837" y="152" text-anchor="middle">your app scans and</text>
+  <text class="sub" x="837" y="168" text-anchor="middle">connects with the normal</text>
+  <text class="sub" x="837" y="184" text-anchor="middle">BluetoothGatt API</text>
+
+  <text class="label" x="588" y="240" text-anchor="middle">Reads, writes and notifications go both ways. No USB dongle, no changes to the app.</text>
+</svg>

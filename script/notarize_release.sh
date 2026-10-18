@@ -27,6 +27,12 @@ fi
 DMG="dist/MacPhone-${MACPHONE_VERSION}.dmg"
 [[ -f "$DMG" ]] || { echo "error: $DMG not found" >&2; exit 1; }
 
+# Gatekeeper's primary-signature check below needs a signed disk image, not only a
+# signed app inside it.
+if [[ -n "${MACPHONE_SIGN_IDENTITY:-}" ]]; then
+  codesign --force --timestamp --sign "$MACPHONE_SIGN_IDENTITY" "$DMG"
+fi
+
 if [[ -n "${MACPHONE_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
   xcrun notarytool submit "$DMG" \
     --keychain-profile "$MACPHONE_NOTARY_KEYCHAIN_PROFILE" \

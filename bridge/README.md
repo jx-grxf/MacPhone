@@ -1,84 +1,52 @@
-# MacPhone → Android Emulator BLE Bridge
+# netsim bridge
 
-Passes a **real BLE device** connected to the Mac through to an Android emulator,
-with **no external Bluetooth hardware**. The Mac's internal radio acts as the BLE
-central; the device's GATT is mirrored as a virtual peripheral on the emulator's
-netsim controller.
+The emulator side of MacPhone's Bluetooth bridge. MacPhone starts it itself when you press **Mirror to Emulator**; this folder is for working on it.
 
-```
-Real BLE device ──BLE──▶ MacPhone.app (CoreBluetooth central, Mac internal radio)
-                              │  127.0.0.1:8765  (newline JSON, BLEBridgeServer)
-                              ▼
-                     macphone_netsim_bridge.py
-                              │  Bumble peripheral
-                              ▼
-                        android-netsim ──▶ Android app under test
-```
+`macphone_netsim_bridge.py` connects to MacPhone on `127.0.0.1:8765`, receives the GATT table of the device MacPhone is connected to, and publishes the same services, name and manufacturer data as a [Bumble](https://github.com/google/bumble) peripheral on netsim, the Android emulator's virtual Bluetooth controller.
 
-One real device = one virtual peripheral (`MacPhone Bridge`) in the emulator. The
-emulator sees and talks to that mirror; reads/writes/notifications are relayed to and
-from the real device on the Mac.
+## Protocol
 
-## Scope & limits (read this)
+One JSON object per line. The client must open with `{"cmd":"hello","token":"…"}`. MacPhone passes the token in `MACPHONE_BRIDGE_TOKEN` and also writes it to `~/Library/Application Support/MacPhone/bridge-token` (mode 0600) for a bridge started by hand. Any other first line closes the connection.
 
-- **BLE only.** CoreBluetooth on macOS cannot access **Bluetooth Classic** (BR/EDR).
-  Classic audio devices (speakers like a JBL, car stereos, classic headsets) are
-  invisible to the Mac side and **cannot** be bridged. Good targets: e-scooters
-  (Xiaomi/Ninebot), fitness bands, smart locks, BLE beacons, or a phone running a
-  BLE-peripheral app.
-- **Connect from a BLE app, not Android Settings.** The Android *Settings → Pair new
-  device* screen is for Classic bonding and will hang on a BLE GATT peripheral. Use a
-  BLE client (e.g. nRF Connect for Android), or the included `netsim_central_probe.py`.
-- Apple devices (AirPods, Apple Watch) advertise but drop/refuse arbitrary GATT
-  connections quickly — poor test targets.
+| From MacPhone | Meaning |
+|---|---|
+| `{"type":"state","value":"connected"}` | The real device is connected or gone (`disconnected`). |
+| `{"type":"gatt","services":[…],"advertisement":{…}}` | The full GATT table, sent once discovery is complete and again after every reconnect. |
+| `{"type":"readResult","service":"…","characteristic":"…","value":"<hex>"}` | Answer to a read. |
+| `{"type":"notification",…}` | A notification or indication from the device. |
 
-## Setup
+| To MacPhone | Meaning |
+|---|---|
+| `{"cmd":"read","service":"…","characteristic":"…"}` | Read a value. |
+| `{"cmd":"write",…,"value":"<hex>","withResponse":true}` | Write a value. |
+| `{"cmd":"subscribe",…,"enabled":true}` | Turn notifications on or off. |
+| `{"cmd":"resetSession"}` | The emulator client left; reconnect the real device for a clean session. |
+
+UUIDs and hex payloads are validated in MacPhone before anything reaches CoreBluetooth.
+
+The bridge exits with code 75 when MacPhone switches to a device with a different GATT layout. MacPhone restarts it, because Bumble cannot swap services while advertising.
+
+## Running it by hand
 
 ```bash
 cd bridge
-python3 -m venv .venv
-.venv/bin/python -m pip install bumble
+./run_bridge.sh          # creates .venv from requirements.txt on first run
 ```
 
-## Test A — self-contained proof (no real device, no app needed)
+Needs a running Android emulator and a device or the demo device active in MacPhone.
 
-Requires only a running Android emulator. Starts a fake GATT (battery + a Xiaomi-style
-service), publishes it on netsim, then connects from the emulator side and reads +
-subscribes:
+## Testing without MacPhone or hardware
 
 ```bash
 ./run_demo.sh
 ```
 
-Expected tail:
+Starts `mock_bridge_server.py` (a fake battery and UART device), the bridge, and `netsim_central_probe.py`, which connects from the emulator side, reads and subscribes. Needs only a running Android emulator.
 
-```
-PASS: received N notification(s). End-to-end GATT path through netsim works.
-```
+## Settings
 
-## Test B — real device through the MacPhone app
-
-1. Start the Android emulator (so netsim is up).
-2. In MacPhone → **Bluetooth**: **Scan** → **Connect** to your BLE device → wait for the
-   GATT tree → **Start Server**.
-3. Run the bridge:
-   ```bash
-   ./run_bridge.sh
-   ```
-   It connects to `127.0.0.1:8765`, reads the GATT, and advertises `MacPhone Bridge`
-   on netsim.
-4. In the emulator, open a **BLE client app** (nRF Connect), scan, connect to
-   `MacPhone Bridge`, and read/write/subscribe. Traffic is relayed to the real device.
-
-## Files
-
-- `macphone_netsim_bridge.py` — the bridge (BLEBridgeServer JSON ↔ Bumble peripheral on netsim).
-- `mock_bridge_server.py` — fake GATT source standing in for the MacPhone app.
-- `netsim_central_probe.py` — automated BLE central on netsim (acts like the Android app).
-- `run_bridge.sh` / `run_demo.sh` — convenience launchers.
-
-## netsim discovery
-
-The bridge finds netsim's gRPC port from `netsim.ini`, searching `$TMPDIR`,
-`~/Library/Caches/TemporaryItems`, per-app launchd temp dirs, and `/tmp`. Override with
-`MACPHONE_NETSIM_TRANSPORT=android-netsim:127.0.0.1:<port>` if needed.
+| Variable | Default | |
+|---|---|---|
+| `MACPHONE_BRIDGE_PORT` | `8765` | MacPhone's socket. |
+| `MACPHONE_NETSIM_TRANSPORT` | found from `netsim.ini` | Bumble transport, for example `android-netsim:127.0.0.1:8554`. |
+| `MACPHONE_CLIENT_IDLE_TIMEOUT` | `120` | Seconds without reads, writes or notifications before an emulator client is disconnected. |

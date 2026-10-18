@@ -2,87 +2,105 @@
 
 # MacPhone
 
-A native macOS device lab — run and control many Android emulators and iOS simulators from one Mac, and bridge a **real** Bluetooth LE device straight into an emulator so on-device apps can talk to hardware the Mac is connected to.
+Real Bluetooth LE devices in the Android emulator on your Mac. MacPhone connects to the device over the Mac's built-in radio and publishes it inside the emulator, so the app you are testing scans, connects and talks to it like on a phone. It also runs your Android emulators and Xcode simulators from one window.
 
 [![CI](https://github.com/jx-grxf/MacPhone/actions/workflows/ci.yml/badge.svg)](https://github.com/jx-grxf/MacPhone/actions/workflows/ci.yml)
-![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-111827)
-![Swift](https://img.shields.io/badge/swift-6.0-orange?logo=swift&logoColor=white)
-![SwiftUI](https://img.shields.io/badge/UI-SwiftUI-0A84FF)
+[![Release](https://img.shields.io/github/v/release/jx-grxf/MacPhone?label=release)](https://github.com/jx-grxf/MacPhone/releases/latest)
+![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-111111)
+![Swift](https://img.shields.io/badge/swift-6-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-[Build](#build) · [Architecture](ARCHITECTURE.md) · [BLE bridge](#the-ble-bridge) · [Technical plan](docs/TECHNICAL_PLAN.md) · [Release](RELEASE.md)
+<img src="docs/icon.png" alt="MacPhone app icon" width="112">
+
+[Download](https://github.com/jx-grxf/MacPhone/releases/latest) · [How it works](#how-it-works) · [Architecture](ARCHITECTURE.md) · [Bridge](bridge/README.md) · [Project page](https://johannesgrof.me/projects/macphone/)
 
 </div>
 
 > [!TIP]
-> The hard part of testing a hardware-talking mobile app isn't the app — it's getting a real BLE
-> device in front of code running inside an emulator. MacPhone connects to the device over the
-> Mac's own radio and re-publishes its exact GATT tree on the emulator's virtual controller, so the
-> app under test sees the real services, characteristics and advertisement with no dongle.
-
-<!-- DEMO: add a screen recording here — screen recording: real BLE device connecting, then the emulator app seeing the same GATT tree
-     Record with ⌘⇧5, then: jx-grxf/tools/make-demo.sh <recording.mov> .
-<p align="center"><img src=".github/assets/demo.gif" alt="" width="720"></p>
--->
+> Built for the moment your Android app talks to a BLE sensor, lock or wearable, and you want to debug it in the emulator instead of on a phone on your desk.
 
 ## What it does
 
-- **Manages Android emulators.** Discover, provision and launch AVDs; one panel for many devices.
-- **Manages iOS simulators.** Drives the Xcode simulator toolchain for parallel iOS environments.
-- **Bridges real Bluetooth LE into the emulator.** Connects to a physical BLE device over
-  CoreBluetooth, mirrors its full GATT tree (services, characteristics, advertisement) and
-  re-broadcasts it on the Android emulator's `netsim` controller via a Bumble virtual peripheral.
-- **Forwards live traffic both ways.** Reads and writes from the emulated app are forwarded to the
-  real device; every notify/indicate characteristic is auto-subscribed so notifications stream back.
-- **Keeps sessions clean.** Disconnects stale emulator clients, requests a fresh real-device session
-  after each disconnect, and tears the bridge down with its parent process — no orphaned peripherals.
+**Bluetooth bridge**
 
-## The BLE bridge
+- Connects to a real Bluetooth LE device with CoreBluetooth and mirrors its services, characteristics and advertisement into the Android emulator.
+- The app under test uses the normal Android `BluetoothGatt` API. No library to add, no code path that only exists for the emulator.
+- Reads, writes and notifications go both ways. Subscriptions are renewed after every reconnect.
+- No USB Bluetooth dongle. The Mac's own radio does the talking.
+- A demo device (battery service plus an echo characteristic) for trying the path without hardware.
 
-```
-Real BLE device
-    │  Bluetooth LE (Mac internal radio)
-    ▼
-MacPhone.app ──CoreBluetooth central──┐
-    │                                 │
-    ▼  127.0.0.1:8765 (newline JSON)  │
-bridge (Bumble) ──peripheral──▶ android-netsim ──▶ Android app under test
-```
+**Android emulators**
 
-The Mac app publishes the live GATT mirror over a localhost JSON socket; the Python bridge
-(`bridge/`) re-publishes it as a Bumble peripheral on `netsim`. The app under test scans and
-connects exactly as it would to the real device. See [`bridge/README.md`](bridge/README.md).
+- Creates emulators with current Google images (Android 14 to 17), downloading image and emulator with `sdkmanager`.
+- Start, stop, cold start, start without a window, erase, delete.
+- Install an `.apk` by dropping it on a running emulator, open a URL or deep link, take a screenshot, switch light and dark mode.
+- Finds the SDK in Android Studio's folder, `ANDROID_HOME` or the Homebrew command-line tools.
 
-## Build
+**Xcode simulators**
 
-Requires macOS 14+ and the current stable Xcode 26 toolchain.
+- Every simulator grouped by iPhone, iPad, Apple Watch, Apple TV and Vision, with search and a running-only filter.
+- Create simulators for any installed runtime and download missing runtimes through Xcode.
+- Install an `.app` by dropping it, open URLs, screenshots, appearance, a clean 9:41 status bar, rename, duplicate, erase, delete.
+
+**Setup**
+
+- Checks Python, the bridge runtime, Java, the Android tools and Xcode, and installs what is missing with one click.
+
+## How it works
+
+<p align="center">
+  <img src="docs/how-it-works.svg" alt="BLE device to the Mac's radio, MacPhone, a local bridge process, and the Android emulator's virtual Bluetooth controller" width="860">
+</p>
+
+1. MacPhone connects to the device as a CoreBluetooth central and reads its GATT table.
+2. It hands the table to a small Python process over `127.0.0.1`. The socket only accepts a client that presents a token MacPhone generates at launch.
+3. That process uses [Bumble](https://github.com/google/bumble) to publish the same services, name and manufacturer data on netsim, the emulator's virtual Bluetooth controller.
+4. Your app sees an ordinary BLE peripheral. Every read, write and subscription is forwarded to the real device.
+
+### What works and what doesn't
+
+| | |
+|---|---|
+| Bluetooth LE peripherals (sensors, locks, wearables, beacons, your own firmware) | Works |
+| Devices that secure traffic in their own protocol | Works |
+| Devices that require Bluetooth pairing or link-layer encryption | Does not work: the mirror sits above the link layer |
+| Bluetooth Classic (speakers, headsets, car audio) | Does not work: macOS exposes only BLE to apps |
+| iOS Simulator | Does not work: the simulator has no Bluetooth |
+
+Connect from your app or a BLE client such as nRF Connect. The Android Settings pairing screen is for Classic devices and will hang.
+
+## Install
+
+Download the DMG from the [latest release](https://github.com/jx-grxf/MacPhone/releases/latest), drag MacPhone to Applications and open it. Updates arrive through Sparkle.
+
+The current builds are not notarized. On first launch, open System Settings → Privacy & Security and choose Open Anyway.
+
+## Requirements
+
+- macOS 14 or later, Apple silicon
+- For the bridge: Python 3.11 or later (Setup installs it with Homebrew) and an Android emulator with netsim, which every current emulator has
+- For simulators: Xcode
+
+## Development
 
 ```bash
-git clone https://github.com/jx-grxf/MacPhone.git
-cd MacPhone
 brew install xcodegen
 ./script/build_and_run.sh
 ```
 
-The BLE bridge runs from its own virtualenv:
+Tests:
 
 ```bash
-cd bridge
-python3 -m venv .venv && source .venv/bin/activate
-pip install bumble
-python3 macphone_netsim_bridge.py
+./script/prepare_xcode_project.sh
+xcodebuild -project MacPhone.xcodeproj -scheme MacPhone -destination 'platform=macOS' test
 ```
 
-## Architecture
+Toolchain and release rules are in [AGENTS.md](AGENTS.md). The bridge can be run and tested on its own, see [bridge/README.md](bridge/README.md).
 
-- `Sources/MacPhone/Services/` — orchestrators (Android/iOS), the CoreBluetooth bridge service and
-  localhost server, the netsim bridge process supervisor, device control and setup.
-- `Sources/MacPhone/Views/` — SwiftUI UI (sidebar, detail, Bluetooth bridge, provisioning, setup).
-- `Sources/MacPhone/Stores/` + `Models/` — device store and BLE/device models.
-- `bridge/` — the Python/Bumble netsim peripheral that mirrors the real device into the emulator.
+## Similar tools
 
-Full module map in [ARCHITECTURE.md](ARCHITECTURE.md).
+[BLEForEmulator](https://github.com/engelon/BLEForEmulator) takes the same idea the other way round: the Android app links a library that talks to a Mac helper. MacPhone needs no change to the app, at the cost of a Python runtime on the Mac.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
