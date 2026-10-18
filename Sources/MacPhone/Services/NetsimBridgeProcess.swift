@@ -10,6 +10,9 @@ final class NetsimBridgeProcess {
     private(set) var statusLine = "Off"
     private(set) var log: [String] = []
     private(set) var lastError: String?
+    /// An app in the emulator holds a GATT connection to the mirrored device. This is the
+    /// emulator side; the bridge's own socket to MacPhone says nothing about it.
+    private(set) var isEmulatorClientConnected = false
 
     private var process: Process?
     private var readHandle: FileHandle?
@@ -123,6 +126,7 @@ final class NetsimBridgeProcess {
         isRunning = true
         lastError = nil
         pendingOutput = Data()
+        isEmulatorClientConnected = false
         log = []
         statusLine = "Starting the bridge"
         append("Starting the netsim bridge.")
@@ -135,6 +139,7 @@ final class NetsimBridgeProcess {
         process?.terminate()
         process = nil
         isRunning = false
+        isEmulatorClientConnected = false
         statusLine = "Stopped"
     }
 
@@ -155,7 +160,11 @@ final class NetsimBridgeProcess {
             guard !trimmed.isEmpty else { continue }
             append(trimmed)
             // Surface the most meaningful states as the one-line status.
-            if trimmed.contains("Advertising on netsim") {
+            if trimmed.contains("Android GATT client connected") {
+                isEmulatorClientConnected = true
+            } else if trimmed.contains("Android GATT client disconnected") {
+                isEmulatorClientConnected = false
+            } else if trimmed.contains("Advertising on netsim") {
                 statusLine = "Visible in the emulator"
             } else if trimmed.contains("Waiting for the GATT") {
                 statusLine = "Waiting for a device"
@@ -181,6 +190,7 @@ final class NetsimBridgeProcess {
             pendingOutput = Data()
         }
         isRunning = false
+        isEmulatorClientConnected = false
         process = nil
 
         if !intentionalStop && ended.terminationStatus == Self.exitGATTChanged {

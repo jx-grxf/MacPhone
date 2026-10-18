@@ -47,7 +47,7 @@ final class BLEBridgeService: NSObject {
     var isBluetoothReady: Bool { managerState == .poweredOn }
     var isScanning: Bool { state == .scanning }
     var isMirroring: Bool { bridgeProcess.isRunning }
-    var isEmulatorConnected: Bool { isMirroring && server.clientCount > 0 }
+    var isEmulatorConnected: Bool { isMirroring && bridgeProcess.isEmulatorClientConnected }
 
     var bluetoothProblem: String? {
         switch managerState {
