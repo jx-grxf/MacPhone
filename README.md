@@ -103,4 +103,6 @@ Toolchain and release rules are in [AGENTS.md](AGENTS.md). The bridge can be run
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+The source code is released under the MIT License, see [LICENSE](LICENSE). The copyright notice naming Johannes Grof must stay in every copy.
+
+The name MacPhone and the app icon are not covered by the MIT License. See [NOTICE](NOTICE) for what that means.

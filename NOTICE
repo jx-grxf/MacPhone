@@ -1,0 +1,23 @@
+MacPhone
+Copyright (c) 2026 Johannes Grof
+
+The source code in this repository is licensed under the MIT License (see
+LICENSE). The following are excluded from that license:
+
+- the name "MacPhone" as the name of this project and app
+- the app icon, including Design/AppIcon.png, docs/icon.png and the files in
+  Sources/MacPhone/Resources/Assets.xcassets/AppIcon.appiconset/
+
+All rights to the name and the icon are reserved by Johannes Grof. Without his
+written permission they may not be used
+
+- for another project, product, app or website,
+- in a portfolio, presentation or listing that presents MacPhone as the work,
+  idea or property of someone other than Johannes Grof, or
+- in any other way that suggests someone else created, owns or endorses
+  MacPhone.
+
+You may use the name to refer to this project, for example in a link to this
+repository or in a description that credits Johannes Grof as its author.
+
+A modified version or fork of the code must use a different name and icon.
