@@ -484,8 +484,10 @@ async def main():
 
     transport_spec = resolve_netsim_transport()
     async with await open_transport_or_link(transport_spec) as hci:
+        # The GAP Device Name characteristic must match the advertised name; some apps
+        # identify the device by reading it after connecting.
         device = Device.with_hci(
-            PERIPHERAL_NAME,
+            (bridge.advertisement or {}).get("localName") or PERIPHERAL_NAME,
             Address(PERIPHERAL_ADDRESS),
             hci.source,
             hci.sink,
